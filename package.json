@@ -1,0 +1,21 @@
+{
+  "name": "savor-bot",
+  "version": "1.0.0",
+  "description": "Savor community bot — drip-feeds organic activity to the community feed",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js --dry-run"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "mongoose": "^8.0.0",
+    "mongoose-unique-validator": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
