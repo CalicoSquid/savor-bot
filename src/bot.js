@@ -10,18 +10,6 @@ const BotConfig = require("./models/BotConfig");
 const { FIRST_NAMES, SAVOR_RECIPES } = require("./data/recipes");
 const { addEntry } = require("./activityLog");
 
-const extractImage = require("../extractLogic/extractImage");
-const safeExtractNestedObject = require("../extractLogic/extractNestedObject");
-const extractAuthor = require("../extractLogic/extractAuthor");
-const extractDescription = require("../extractLogic/extractDescription");
-const extractIngredients = require("../extractLogic/extractIngredients");
-const extractConvertedIngredients = require("../extractLogic/extractConvertedIngredients");
-const extractInstructions = require("../extractLogic/extractInstructions");
-const extractYield = require("../extractLogic/extractRecipeYield");
-const extractTimeObject = require("../extractLogic/extractTimeObject");
-const extractName = require("../extractLogic/extractName");
-const extractCategory = require("../extractLogic/extractCategory");
-const extractCuisine = require("../extractLogic/extractCuisine");
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const DRY_RUN = process.argv.includes("--dry-run");
