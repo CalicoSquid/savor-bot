@@ -19,11 +19,11 @@ const botConfigSchema = new mongoose.Schema({
 });
 
 botConfigSchema.statics.get = async function () {
-  let config = await this.findOne({ key: "main" });
-  if (!config) {
-    config = await this.create({ key: "main" });
-  }
-  return config;
+  return this.findOneAndUpdate(
+    { key: "main" },
+    { $setOnInsert: { key: "main", speed: "normal", paused: false } },
+    { upsert: true, new: true }
+  );
 };
 
 botConfigSchema.statics.set = async function (updates) {
