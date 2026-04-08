@@ -81,7 +81,6 @@ const SITEMAPS = [
   },
 ];
 
-const SCRAPE_COOLDOWN_MS = 3000;
 const BOT_COUNT = 10;
 const MAX_FAIL_COUNT = 3;
 
@@ -126,24 +125,6 @@ const getDomain = (url) => {
   } catch {
     return url;
   }
-};
-
-const toStringArray = (arr) => {
-  if (!arr) return [];
-  if (!Array.isArray(arr)) return typeof arr === "string" ? [arr] : [];
-  return arr
-    .map((item) => {
-      if (typeof item === "string") return item;
-      if (item && typeof item === "object")
-        return (
-          item.text ||
-          item.name ||
-          item.ingredientString ||
-          JSON.stringify(item)
-        );
-      return String(item);
-    })
-    .filter(Boolean);
 };
 
 // ── Pexels ────────────────────────────────────────────────────────────────────
@@ -207,13 +188,30 @@ async function markUrlDead(urlStr) {
 // ── Bot user management ───────────────────────────────────────────────────────
 function assignMaxShares() {
   const roll = Math.random();
-  if (roll < 0.3) return rand(1, 3); // 30% casual — leaves quickly
-  if (roll < 0.8) return rand(5, 20); // 50% regular
-  return rand(25, 60); // 20% power user
+  if (roll < 0.3) return rand(1, 3);   // 30% casual — leaves quickly
+  if (roll < 0.8) return rand(5, 20);  // 50% regular
+  return rand(25, 60);                  // 20% power user
+}
+
+// Retire a bot user — flag as inactive rather than deleting, so shared
+// recipes retain a valid user reference and display correctly in the feed.
+async function retireBot(user) {
+  log("👋", "info", `Bot @${user.username} retiring after ${user.shareCount} shares`);
+  if (!DRY_RUN) {
+    await UserFb.findByIdAndUpdate(user._id, {
+      isSeedUser: false,
+      maxShares: -1, // prevents re-retirement check from ever firing
+    });
+  }
+  // Pool refills itself on next ensureBotUsers() call
 }
 
 async function ensureBotUsers() {
-  const existing = await UserFb.find({ firebaseUID: /^bot_user_/ });
+  // Active bots only: maxShares > 0 (retired bots have maxShares: -1)
+  const existing = await UserFb.find({
+    firebaseUID: /^bot_user_/,
+    maxShares: { $gt: 0 },
+  });
 
   if (existing.length >= BOT_COUNT) {
     log("👥", "info", `${existing.length} bot users ready`);
@@ -270,11 +268,11 @@ async function scrapeUrl(url) {
     { url },
     {
       headers: {
-        "x-bot-secret":  process.env.BOT_SCRAPE_SECRET,
-        "Content-Type":  "application/json",
+        "x-bot-secret": process.env.BOT_SCRAPE_SECRET,
+        "Content-Type": "application/json",
       },
-      timeout: 45000, // generous — Playwright can be slow
-    }
+      timeout: 45000,
+    },
   );
 
   if (!res.data?.ok || !res.data?.recipe) {
@@ -282,18 +280,18 @@ async function scrapeUrl(url) {
   }
 
   const r = res.data.recipe;
-  if (!r.name)              throw new Error("No name extracted");
+  if (!r.name) throw new Error("No name extracted");
   if (!r.ingredients?.length) throw new Error("No ingredients");
 
   // If Railway returned no image, try Pexels
   const isDefaultImage = !r.image || r.image.startsWith("data:image/png;base64");
-  let imageUrl    = isDefaultImage ? null : r.image;
+  let imageUrl = isDefaultImage ? null : r.image;
   let imageCredit = r.imageCredit || null;
 
   if (!imageUrl) {
     log("🖼️", "info", "No image from scraper — trying Pexels", r.name);
     const pexels = await fetchPexelsImage(r.name);
-    imageUrl    = pexels.url;
+    imageUrl = pexels.url;
     imageCredit = pexels.credit;
   }
 
@@ -386,12 +384,7 @@ async function harvestUrls() {
       const sample = shuffle(fresh).slice(0, HARVEST_PER_SITE);
 
       if (DRY_RUN) {
-        log(
-          "🟡",
-          "info",
-          `[DRY RUN] Would add ${sample.length} URLs`,
-          site.name,
-        );
+        log("🟡", "info", `[DRY RUN] Would add ${sample.length} URLs`, site.name);
         continue;
       }
 
@@ -447,12 +440,7 @@ async function doShare(botUsers) {
     savor.imageCredit = pexels.credit;
 
     if (DRY_RUN) {
-      log(
-        "🟡",
-        "info",
-        `[DRY RUN] Would share Savor recipe "${savor.name}"`,
-        `by ${user.name}`,
-      );
+      log("🟡", "info", `[DRY RUN] Would share Savor recipe "${savor.name}"`, `by ${user.name}`);
       return;
     }
 
@@ -479,38 +467,16 @@ async function doShare(botUsers) {
       user.recipes.push(personal._id);
       user.shareCount = (user.shareCount || 0) + 1;
       await user.save();
-      log(
-        "🍴",
-        "share",
-        `Shared "${shared.name}"`,
-        `by ${user.name} (@${user.username})`,
-      );
-      if (user.shareCount >= user.maxShares) {
-        log(
-          "👋",
-          "info",
-          `Bot @${user.username} retiring after ${user.shareCount} shares`,
-        );
-        if (!DRY_RUN) await UserFb.findByIdAndDelete(user._id);
-
-        // Pool refills itself next ensureBotUsers() call
-      }
+      log("🍴", "share", `Shared "${shared.name}"`, `by ${user.name} (@${user.username})`);
+      if (user.shareCount >= user.maxShares) await retireBot(user);
     } catch (err) {
-      log(
-        "❌",
-        "error",
-        `Failed to save Savor recipe "${savor.name}"`,
-        err.message,
-      );
+      log("❌", "error", `Failed to save Savor recipe "${savor.name}"`, err.message);
     }
     return;
   }
 
   // For both remaining paths we need a URL from the pool
-  const available = await BotUrl.find({
-    verified: { $ne: null },
-    failed: false,
-  });
+  const available = await BotUrl.find({ verified: { $ne: null }, failed: false });
   if (!available.length) {
     log("ℹ️", "info", "No available URLs — add more via the dashboard");
     return;
@@ -538,12 +504,7 @@ async function doShare(botUsers) {
     await markUrlSuccess(entry.url);
   } catch (err) {
     if (is403(err)) {
-      log(
-        "⏭️",
-        "warn",
-        "Rate limited — skipping this cycle",
-        getDomain(entry.url),
-      );
+      log("⏭️", "warn", "Rate limited — skipping this cycle", getDomain(entry.url));
     } else if (is404(err)) {
       log("🗑️", "warn", "URL is dead — marking failed", getDomain(entry.url));
       await markUrlDead(entry.url);
@@ -572,12 +533,7 @@ async function doShare(botUsers) {
   }
 
   if (DRY_RUN) {
-    log(
-      "🟡",
-      "info",
-      `[DRY RUN] Would share "${recipeData.name}"`,
-      `by ${user.name} (@${user.username})`,
-    );
+    log("🟡", "info", `[DRY RUN] Would share "${recipeData.name}"`, `by ${user.name} (@${user.username})`);
     return;
   }
 
@@ -604,16 +560,8 @@ async function doShare(botUsers) {
     user.recipes.push(personal._id);
     user.shareCount = (user.shareCount || 0) + 1;
     await user.save();
-    log(
-      "✅",
-      "share",
-      `Shared "${shared.name}"`,
-      `by ${user.name} (@${user.username})`,
-    );
-    if (user.shareCount >= user.maxShares) {
-      log("👋", "info", `Bot @${user.username} retiring after ${user.shareCount} shares`);
-      if (!DRY_RUN) await UserFb.findByIdAndDelete(user._id);
-    }
+    log("✅", "share", `Shared "${shared.name}"`, `by ${user.name} (@${user.username})`);
+    if (user.shareCount >= user.maxShares) await retireBot(user);
   } catch (err) {
     log("❌", "error", `Failed to save "${recipeData?.name}"`, err.message);
   }
@@ -637,12 +585,7 @@ async function doLike(botUsers) {
   const recipe = pick(recipes);
 
   if (DRY_RUN) {
-    log(
-      "🟡",
-      "info",
-      `[DRY RUN] Would like "${recipe.name}"`,
-      `by ${user.name}`,
-    );
+    log("🟡", "info", `[DRY RUN] Would like "${recipe.name}"`, `by ${user.name}`);
     return;
   }
 
@@ -651,12 +594,7 @@ async function doLike(botUsers) {
   user.likedRecipes.push(recipe._id);
   await user.save();
 
-  log(
-    "❤️",
-    "like",
-    `Liked "${recipe.name}"`,
-    `by ${user.name} (@${user.username})`,
-  );
+  log("❤️", "like", `Liked "${recipe.name}"`, `by ${user.name} (@${user.username})`);
 }
 
 async function doSave(botUsers) {
@@ -677,12 +615,7 @@ async function doSave(botUsers) {
   const recipe = pick(recipes);
 
   if (DRY_RUN) {
-    log(
-      "🟡",
-      "info",
-      `[DRY RUN] Would save "${recipe.name}"`,
-      `by ${user.name} (@${user.username})`,
-    );
+    log("🟡", "info", `[DRY RUN] Would save "${recipe.name}"`, `by ${user.name} (@${user.username})`);
     return;
   }
 
@@ -691,12 +624,7 @@ async function doSave(botUsers) {
     sourceRecipeId: recipe._id,
   });
   if (alreadySaved) {
-    log(
-      "ℹ️",
-      "info",
-      `Already saved "${recipe.name}" — skipping`,
-      user.username,
-    );
+    log("ℹ️", "info", `Already saved "${recipe.name}" — skipping`, user.username);
     return;
   }
 
@@ -721,12 +649,7 @@ async function doSave(botUsers) {
   recipe.saveCount = (recipe.saveCount || 0) + 1;
   await recipe.save();
 
-  log(
-    "📦",
-    "save",
-    `Saved "${recipe.name}"`,
-    `by ${user.name} (@${user.username})`,
-  );
+  log("📦", "save", `Saved "${recipe.name}"`, `by ${user.name} (@${user.username})`);
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
