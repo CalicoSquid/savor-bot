@@ -37,6 +37,7 @@ const HARVEST_PER_SITE = 30;
 
 // ── Sitemap sources ───────────────────────────────────────────────────────────
 const SITEMAPS = [
+  // ── Confirmed working from Railway IP ─────────────────────────────────────
   {
     name: "BBC Good Food",
     url: "https://www.bbcgoodfood.com/sitemap.xml",
@@ -44,6 +45,15 @@ const SITEMAPS = [
     childPattern: /sitemap[^"'<]*recipe/i,
     urlPattern: /bbcgoodfood\.com\/recipes\/[a-z0-9-]{5,}/,
   },
+  {
+    name: "Pinch of Yum",
+    url: "https://pinchofyum.com/sitemap_index.xml",
+    index: true,
+    childPattern: /post-sitemap/i,
+    urlPattern: /pinchofyum\.com\/[a-z0-9-]{5,}/,
+  },
+
+  // ── Worth trying — may work from Railway IP ────────────────────────────────
   {
     name: "AllRecipes",
     url: "https://www.allrecipes.com/sitemap.xml",
@@ -73,11 +83,46 @@ const SITEMAPS = [
     urlPattern: /cookieandkate\.com\/[a-z0-9-]{5,}\//,
   },
   {
-    name: "Pinch of Yum",
-    url: "https://pinchofyum.com/sitemap_index.xml",
+    name: "Taste of Home",
+    url: "https://www.tasteofhome.com/sitemap_index.xml",
     index: true,
     childPattern: /post-sitemap/i,
-    urlPattern: /pinchofyum\.com\/[a-z0-9-]{5,}/,
+    urlPattern: /tasteofhome\.com\/recipes\/[a-z0-9-]{5,}\//,
+  },
+  {
+    name: "Taste (AU)",
+    url: "https://www.taste.com.au/sitemap_index.xml",
+    index: true,
+    childPattern: /recipe/i,
+    urlPattern: /taste\.com\.au\/recipes\/[a-z0-9-]{5,}/,
+  },
+  {
+    name: "Jamie Oliver",
+    url: "https://www.jamieoliver.com/sitemap.xml",
+    index: true,
+    childPattern: /recipe/i,
+    urlPattern: /jamieoliver\.com\/recipes\/[a-z0-9-]{5,}/,
+  },
+  {
+    name: "BBC Food",
+    url: "https://www.bbc.co.uk/food/sitemap.xml",
+    index: false,
+    childPattern: null,
+    urlPattern: /bbc\.co\.uk\/food\/recipes\/[a-z0-9_]{5,}/,
+  },
+  {
+    name: "Delish",
+    url: "https://www.delish.com/sitemap.xml",
+    index: true,
+    childPattern: /recipe/i,
+    urlPattern: /delish\.com\/cooking\/recipe-ideas\/[a-z0-9-]{5,}/,
+  },
+  {
+    name: "Food Network",
+    url: "https://www.foodnetwork.com/sitemap.xml",
+    index: true,
+    childPattern: /recipe/i,
+    urlPattern: /foodnetwork\.com\/recipes\/[a-z0-9-]{5,}/,
   },
 ];
 
