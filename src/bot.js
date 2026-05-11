@@ -9,6 +9,7 @@ const BotUrl = require("./models/BotUrl");
 const BotConfig = require("./models/BotConfig");
 const { FIRST_NAMES, SAVOR_RECIPES } = require("./data/recipes");
 const { addEntry } = require("./activityLog");
+const { harvestAll } = require("./harvester");
 
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
@@ -33,98 +34,9 @@ const BASE_TIMINGS = {
 // Harvest runs independently of speed — always every 2–4 days
 const HARVEST_MIN = 2 * 24 * 60 * 60 * 1000;
 const HARVEST_MAX = 4 * 24 * 60 * 60 * 1000;
-const HARVEST_PER_SITE = 30;
 
-// ── Sitemap sources ───────────────────────────────────────────────────────────
-const SITEMAPS = [
-  // ── Confirmed working from Railway IP ─────────────────────────────────────
-  {
-    name: "BBC Good Food",
-    url: "https://www.bbcgoodfood.com/sitemap.xml",
-    index: true,
-    childPattern: /sitemap[^"'<]*recipe/i,
-    urlPattern: /bbcgoodfood\.com\/recipes\/[a-z0-9-]{5,}/,
-  },
-  {
-    name: "Pinch of Yum",
-    url: "https://pinchofyum.com/sitemap_index.xml",
-    index: true,
-    childPattern: /post-sitemap/i,
-    urlPattern: /pinchofyum\.com\/[a-z0-9-]{5,}/,
-  },
-
-  // ── Worth trying — may work from Railway IP ────────────────────────────────
-  {
-    name: "AllRecipes",
-    url: "https://www.allrecipes.com/sitemap.xml",
-    index: true,
-    childPattern: /sitemap[^"'<]*recipe/i,
-    urlPattern: /allrecipes\.com\/recipe\/\d+/,
-  },
-  {
-    name: "Simply Recipes",
-    url: "https://www.simplyrecipes.com/sitemap_index.xml",
-    index: true,
-    childPattern: /post-sitemap/i,
-    urlPattern: /simplyrecipes\.com\/recipes\//,
-  },
-  {
-    name: "Budget Bytes",
-    url: "https://www.budgetbytes.com/sitemap_index.xml",
-    index: true,
-    childPattern: /post-sitemap/i,
-    urlPattern: /budgetbytes\.com\/[a-z0-9-]{5,}\//,
-  },
-  {
-    name: "Cookie and Kate",
-    url: "https://cookieandkate.com/sitemap_index.xml",
-    index: true,
-    childPattern: /post-sitemap/i,
-    urlPattern: /cookieandkate\.com\/[a-z0-9-]{5,}\//,
-  },
-  {
-    name: "Taste of Home",
-    url: "https://www.tasteofhome.com/sitemap_index.xml",
-    index: true,
-    childPattern: /post-sitemap/i,
-    urlPattern: /tasteofhome\.com\/recipes\/[a-z0-9-]{5,}\//,
-  },
-  {
-    name: "Taste (AU)",
-    url: "https://www.taste.com.au/sitemap_index.xml",
-    index: true,
-    childPattern: /recipe/i,
-    urlPattern: /taste\.com\.au\/recipes\/[a-z0-9-]{5,}/,
-  },
-  {
-    name: "Jamie Oliver",
-    url: "https://www.jamieoliver.com/sitemap.xml",
-    index: true,
-    childPattern: /recipe/i,
-    urlPattern: /jamieoliver\.com\/recipes\/[a-z0-9-]{5,}/,
-  },
-  {
-    name: "BBC Food",
-    url: "https://www.bbc.co.uk/food/sitemap.xml",
-    index: false,
-    childPattern: null,
-    urlPattern: /bbc\.co\.uk\/food\/recipes\/[a-z0-9_]{5,}/,
-  },
-  {
-    name: "Delish",
-    url: "https://www.delish.com/sitemap.xml",
-    index: true,
-    childPattern: /recipe/i,
-    urlPattern: /delish\.com\/cooking\/recipe-ideas\/[a-z0-9-]{5,}/,
-  },
-  {
-    name: "Food Network",
-    url: "https://www.foodnetwork.com/sitemap.xml",
-    index: true,
-    childPattern: /recipe/i,
-    urlPattern: /foodnetwork\.com\/recipes\/[a-z0-9-]{5,}/,
-  },
-];
+// Low-pool threshold — triggers an immediate harvest on startup and after each action cycle
+const URL_POOL_LOW = 20;
 
 const BOT_COUNT = 10;
 const MAX_FAIL_COUNT = 3;
@@ -343,133 +255,13 @@ async function scrapeUrl(url) {
   return { ...r, image: imageUrl, imageCredit };
 }
 
-// ── URL Harvester ─────────────────────────────────────────────────────────────
-async function fetchXml(url) {
-  try {
-    const { data } = await axios.get(url, {
-      timeout: 15000,
-      headers: BROWSER_HEADERS,
-      responseType: "text",
-    });
-    return data;
-  } catch {
-    return null;
+// ── URL Harvester (delegated to harvester.js) ─────────────────────────────────
+async function checkAndHarvestIfLow() {
+  const count = await BotUrl.countDocuments({ verified: { $ne: null }, failed: false });
+  if (count < URL_POOL_LOW) {
+    log("⚠️", "info", `URL pool low (${count}) — triggering auto-harvest`);
+    harvestAll().catch((err) => log("❌", "error", "Auto-harvest error", err.message));
   }
-}
-
-function extractLocs(xml) {
-  const matches = xml.match(/<loc>([^<]+)<\/loc>/g) || [];
-  return matches.map((m) => m.replace(/<\/?loc>/g, "").trim());
-}
-
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
-async function harvestUrls() {
-  log("🌾", "info", "Starting URL harvest...");
-
-  const existing = new Set(
-    (await BotUrl.find({}, "url").lean()).map((e) => e.url),
-  );
-
-  let totalAdded = 0;
-
-  for (const site of SITEMAPS) {
-    try {
-      log("📡", "info", "Harvesting sitemap", site.name);
-
-      let recipeUrls = [];
-
-      if (site.index) {
-        const indexXml = await fetchXml(site.url);
-        if (!indexXml) {
-          log("⚠️", "warn", "Could not fetch sitemap index", site.name);
-          continue;
-        }
-
-        const childUrls = extractLocs(indexXml).filter((u) =>
-          site.childPattern.test(u),
-        );
-
-        if (!childUrls.length) {
-          log("⚠️", "warn", "No matching child sitemaps found", site.name);
-          continue;
-        }
-
-        for (const childUrl of childUrls) {
-          await sleep(1000 + rand(0, 1000));
-          const childXml = await fetchXml(childUrl);
-          if (!childXml) continue;
-          const urls = extractLocs(childXml).filter((u) =>
-            site.urlPattern.test(u),
-          );
-          recipeUrls.push(...urls);
-        }
-      } else {
-        const xml = await fetchXml(site.url);
-        if (!xml) {
-          log("⚠️", "warn", "Could not fetch sitemap", site.name);
-          continue;
-        }
-        recipeUrls = extractLocs(xml).filter((u) => site.urlPattern.test(u));
-      }
-
-      const fresh = recipeUrls.filter((u) => !existing.has(u));
-
-      if (!fresh.length) {
-        log("ℹ️", "info", "No new URLs found", site.name);
-        continue;
-      }
-
-      const sample = shuffle(fresh).slice(0, HARVEST_PER_SITE);
-
-      if (DRY_RUN) {
-        log("🟡", "info", `[DRY RUN] Would add ${sample.length} URLs`, site.name);
-        continue;
-      }
-
-      let added = 0;
-      for (const url of sample) {
-        try {
-          await BotUrl.create({
-            url,
-            verified: new Date().toISOString().slice(0, 10),
-            failed: false,
-            failCount: 0,
-            note: site.name,
-          });
-          existing.add(url);
-          added++;
-        } catch (err) {
-          if (err.code !== 11000)
-            log("⚠️", "warn", "Failed to insert URL", err.message);
-        }
-      }
-
-      totalAdded += added;
-      log(
-        "✅",
-        "info",
-        `Added ${added} new URLs from ${site.name}`,
-        `(${fresh.length} fresh found, ${recipeUrls.length} total in sitemap)`,
-      );
-    } catch (err) {
-      log("❌", "error", `Harvest error for ${site.name}`, err.message);
-    }
-
-    await sleep(2000 + rand(0, 2000));
-  }
-
-  log(
-    "🌾",
-    "info",
-    `Harvest complete — ${totalAdded} new URLs added across all sites`,
-  );
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -478,7 +270,9 @@ async function doShare(botUsers) {
 
   // 10% → hand-crafted Savor recipe
   if (roll < 0.1) {
-    const savor = { ...pick(SAVOR_RECIPES) };
+    const sharedSavorNames = await Recipe.distinct("name", { isShared: true, scrapedWithAI: true, sourceUrl: null });
+    const unshared = SAVOR_RECIPES.filter(r => !sharedSavorNames.includes(r.name));
+    const savor = { ...(unshared.length ? pick(unshared) : pick(SAVOR_RECIPES)) };
     const user = pick(botUsers);
     const pexels = await fetchPexelsImage(savor.name);
     savor.image = pexels.url;
@@ -770,7 +564,7 @@ async function startBot() {
     const delay = rand(HARVEST_MIN, HARVEST_MAX);
     log("🕐", "info", `Next URL harvest in ${Math.round(delay / 3600000)} hrs`);
     await sleep(delay);
-    await harvestUrls().catch((err) =>
+    await harvestAll().catch((err) =>
       log("❌", "error", "Harvest error", err.message),
     );
     scheduleHarvest();
@@ -782,9 +576,9 @@ async function startBot() {
   scheduleHarvest();
 
   // Run a harvest on startup if the URL pool is low
-  if (urlCount < 20) {
-    log("⚠️", "info", "URL pool is low — running initial harvest");
-    harvestUrls().catch((err) =>
+  if (urlCount < URL_POOL_LOW) {
+    log("⚠️", "info", "URL pool low on startup — triggering harvest");
+    harvestAll().catch((err) =>
       log("❌", "error", "Initial harvest error", err.message),
     );
   }
@@ -793,4 +587,4 @@ async function startBot() {
   log("🌱", "info", "Bot running");
 }
 
-module.exports = { startBot, harvestUrls };
+module.exports = { startBot, harvestAll, checkAndHarvestIfLow };
