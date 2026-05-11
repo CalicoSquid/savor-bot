@@ -447,7 +447,7 @@ app.get("/", (req, res) => {
   }
 
   function clearAll() {
-    if (!confirm("⚠️ This will delete ALL URLs from the pool — active and failed.\n\nThe bot will stop sharing until you add new URLs.\n\nAre you sure?")) return;
+    if (!confirm("Delete ALL URLs from the pool? The bot will stop sharing until you add new ones.")) return;
     if (!confirm("Second confirmation — delete the entire URL pool?")) return;
     api("/api/urls/clear/all", { method: "DELETE", body: JSON.stringify({ confirm: true }) })
       .then(d => {
