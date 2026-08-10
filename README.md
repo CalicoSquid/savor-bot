@@ -9,8 +9,10 @@ Savor community bot — drip-feeds organic activity (shares, likes, saves) to th
 - **Pause / Resume** the bot instantly
 - **Speed presets** — Quiet (slow), Normal, Active (fast) — multiplies all timing intervals
 - **Activity log** — last 100 events in real time
-- **URL pool** — add/remove/reset scrape URLs without touching the code
-- **Stats** — active URLs, bot shares, bot user count
+- **URL pool** — paginated inventory view (25/50/100 rows), search, status/source filters, per-source counts, failed-URL retry, and manual URL add/remove
+- **Pool safety** — consumed URLs are shown as protected history; destructive full-pool reset is tucked into a clearly labelled danger zone
+- **Recipe sources** — enable/disable, preview, and manually trigger a harvest across all enabled sources
+- **Stats** — total/active/used/failed/pending URL counts, bot shares, bot user count
 
 ---
 
@@ -95,6 +97,22 @@ site/homepage
 This means a new source can be added from the dashboard with just a **name + website URL**. The old URL/child regex fields are still available as optional advanced hints, so the currently working sources are not thrown away.
 
 The share picker also applies a source-diversity brake using the bot's last 10 consumed source URLs. A domain that has just appeared repeatedly is heavily down-weighted; unseen domains get a boost. This changes selection only — it does not alter Recipe or User schemas.
+
+### Source-first sharing v6
+
+External shares now choose the **source first, then a recipe within that source**. The existing URL pool is preserved in full; no migration, reset, or replacement is performed. A publisher with 400 unused URLs therefore does not receive 400 times the baseline selection opportunity of a publisher with 20 URLs.
+
+Source selection is weighted by the bot persona plus the existing recent-source diversity brake. Inventory depth receives only a small capped bonus (about 1.08x at 10 unused URLs, 1.16x at 100, capped at 1.20x), so a healthy backlog helps a little without allowing large legacy pools to swamp newly enabled publishers. After a source wins, one of its unused URLs is selected uniformly.
+
+Older migrated `BotUrl` rows may have an empty `note`; persona source preferences now fall back to the URL domain for those rows, so the existing pool participates correctly without a database migration.
+
+### URL dashboard v7
+
+The dashboard no longer downloads and renders the entire Mongo URL collection every 15 seconds. `/api/urls` is server-side paginated and defaults to **25 active URLs per page**. The pool can be searched and filtered by status or source, with 25/50/100 row page sizes. Summary counters show Total, Active, Used, Failed and Pending inventory; the source dropdown shows active/total counts per publisher.
+
+Consumed URLs are intentionally presented as history rather than ordinary reset/delete rows because those records are the duplicate-prevention ledger. Failed URLs keep an explicit Retry action; active/pending URLs can still be removed. The pre-existing full-pool reset remains available only inside a labelled danger zone and warns that it also removes consumed history. Recipe Sources also exposes a **Harvest enabled sources** button backed by the existing `/api/harvest` route.
+
+No URL documents are migrated, replaced or deleted by this dashboard upgrade. It is a management/API presentation change only.
 
 The seed script now includes additional disabled homepage-only candidates. Re-run it safely (existing rows are skipped):
 

@@ -20,6 +20,34 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: "Unauthorized" });
 }
 
+function normalizeHost(value) {
+  return String(value || "").toLowerCase().replace(/^www\./, "");
+}
+
+function getUrlHost(value) {
+  try { return normalizeHost(new URL(value).hostname); }
+  catch { return "unknown"; }
+}
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function urlStatusFilter(status) {
+  switch (status) {
+    case "active":
+      return { verified: { $ne: null }, failed: false, consumedAt: null };
+    case "used":
+      return { failed: false, consumedAt: { $ne: null } };
+    case "failed":
+      return { failed: true };
+    case "pending":
+      return { verified: null, failed: false, consumedAt: null };
+    default:
+      return {};
+  }
+}
+
 // ── Dashboard HTML ────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -72,7 +100,7 @@ app.get("/", (req, res) => {
     }
     header h1 { font-size: 20px; }
     header span { font-size: 13px; color: #888; }
-    .container { max-width: 960px; margin: 0 auto; padding: 32px; }
+    .container { max-width: 1120px; margin: 0 auto; padding: 32px; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
     @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
     .card {
@@ -119,13 +147,38 @@ app.get("/", (req, res) => {
     .log-warn  { color: #f97316; }
     .url-list  { list-style: none; }
     .url-item  {
-      padding: 10px 0; border-bottom: 1px solid #f0f0f0;
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 8px;
+      padding: 12px 0; border-bottom: 1px solid #f0f0f0;
+      display: grid; grid-template-columns: minmax(0,1fr) auto;
+      align-items: center; gap: 12px;
     }
     .url-item:last-child { border-bottom: none; }
-    .url-text  { font-size: 13px; color: #555; word-break: break-all; flex: 1; }
+    .url-main { min-width:0; }
+    .url-head { display:flex;align-items:center;gap:8px;min-width:0;margin-bottom:3px; }
+    .url-source { font-size:12px;font-weight:700;color:#444;white-space:nowrap; }
+    .url-text  { font-size: 12px; color: #777; overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
     .url-text.failed { text-decoration: line-through; color: #bbb; }
+    .url-meta { font-size:11px;color:#aaa;display:flex;gap:10px;flex-wrap:wrap; }
+    .url-actions { display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end; }
+    .pool-summary { display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px; }
+    .pool-stat { background:#fafaf7;border-radius:10px;padding:10px;text-align:center; }
+    .pool-stat strong { display:block;font-size:18px;color:#333; }
+    .pool-stat span { display:block;font-size:10px;color:#999;margin-top:2px;text-transform:uppercase;letter-spacing:.03em; }
+    .pool-toolbar { display:grid;grid-template-columns:minmax(180px,2fr) 1fr 1.4fr auto;gap:8px;margin-bottom:10px; }
+    .pool-toolbar input,.pool-toolbar select { width:100%;padding:9px 11px;border:1.5px solid #e0e0e0;border-radius:9px;background:white;font-size:12px;outline:none;min-width:0; }
+    .pool-toolbar input:focus,.pool-toolbar select:focus { border-color:#FF6D00; }
+    .pool-results { display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 0 8px;color:#888;font-size:12px; }
+    .pagination { display:flex;align-items:center;justify-content:center;gap:8px;margin-top:14px; }
+    .page-label { font-size:12px;color:#777;min-width:110px;text-align:center; }
+    .danger-zone { margin-top:12px;border-top:1px solid #f0f0f0;padding-top:10px; }
+    .danger-zone summary { cursor:pointer;color:#b4233f;font-size:12px;font-weight:600; }
+    .danger-copy { font-size:11px;color:#999;line-height:1.45;margin:8px 0; }
+    @media (max-width: 760px) {
+      .pool-summary { grid-template-columns:repeat(3,1fr); }
+      .pool-toolbar { grid-template-columns:1fr 1fr; }
+      .pool-toolbar .pool-search { grid-column:1 / -1; }
+      .url-item { grid-template-columns:1fr; }
+      .url-actions { justify-content:flex-start; }
+    }
     .badge {
       font-size: 11px; font-weight: 600; padding: 2px 8px;
       border-radius: 6px; white-space: nowrap;
@@ -241,23 +294,73 @@ app.get("/", (req, res) => {
 
     <!-- URL management -->
     <div class="card" style="margin-top:24px">
-      <h2>URL Pool</h2>
+      <h2>URL Pool <span id="pool-filter-label" style="font-weight:400;color:#aaa;font-size:12px;text-transform:none;letter-spacing:0"></span></h2>
+
+      <div class="pool-summary">
+        <div class="pool-stat"><strong id="pool-total">—</strong><span>Total</span></div>
+        <div class="pool-stat"><strong id="pool-active">—</strong><span>Active</span></div>
+        <div class="pool-stat"><strong id="pool-used">—</strong><span>Used</span></div>
+        <div class="pool-stat"><strong id="pool-failed">—</strong><span>Failed</span></div>
+        <div class="pool-stat"><strong id="pool-pending">—</strong><span>Pending</span></div>
+      </div>
+
+      <div class="pool-toolbar">
+        <input class="pool-search" type="search" id="url-search" placeholder="Search URL or source…" oninput="queueUrlSearch()" />
+        <select id="url-status" onchange="setUrlFilter()">
+          <option value="all">All statuses</option>
+          <option value="active" selected>Active</option>
+          <option value="used">Used</option>
+          <option value="failed">Failed</option>
+          <option value="pending">Pending</option>
+        </select>
+        <select id="url-source" onchange="setUrlFilter()">
+          <option value="all">All sources</option>
+        </select>
+        <select id="url-limit" onchange="setUrlFilter()">
+          <option value="25" selected>25 / page</option>
+          <option value="50">50 / page</option>
+          <option value="100">100 / page</option>
+        </select>
+      </div>
+
+      <div class="pool-results">
+        <span id="url-results">Loading…</span>
+        <button class="btn btn-neutral btn-sm" onclick="clearUrlFilters()">Clear filters</button>
+      </div>
+
       <ul class="url-list" id="url-list">
         <li class="empty">Loading...</li>
       </ul>
+
+      <div class="pagination">
+        <button class="btn btn-neutral btn-sm" id="url-prev" onclick="changeUrlPage(-1)">← Previous</button>
+        <span class="page-label" id="url-page-label">Page —</span>
+        <button class="btn btn-neutral btn-sm" id="url-next" onclick="changeUrlPage(1)">Next →</button>
+      </div>
+
       <div class="url-add-row">
         <input type="text" id="url-input" placeholder="https://www.bbcgoodfood.com/recipes/..." />
         <button class="btn btn-primary" onclick="addUrl()">Add URL</button>
       </div>
+
       <div style="display:flex;gap:8px;margin-top:10px">
-        <button class="btn btn-neutral btn-sm" onclick="clearFailed()" style="flex:1">🗑 Clear failed URLs</button>
-        <button class="btn btn-danger btn-sm" onclick="clearAll()" style="flex:1">⚠️ Clear entire pool</button>
+        <button class="btn btn-neutral btn-sm" onclick="clearFailed()">🗑 Clear failed URLs</button>
       </div>
+
+      <details class="danger-zone">
+        <summary>Danger zone</summary>
+        <div class="danger-copy">Clearing the entire pool also removes consumed URL history, which protects against old recipes being harvested and shared again. Only use this for a deliberate full reset.</div>
+        <button class="btn btn-danger btn-sm" onclick="clearAll()">⚠️ Clear entire pool</button>
+      </details>
     </div>
 
     <!-- Sites management -->
     <div class="card" style="margin-top:24px">
-      <h2>Recipe Sources</h2>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <h2 style="margin-bottom:0">Recipe Sources</h2>
+        <button class="btn btn-primary btn-sm" onclick="startHarvest()">🌾 Harvest enabled sources</button>
+      </div>
+      <div style="font-size:12px;color:#888;margin:10px 0 14px">Enabled sources feed the URL pool. Preview a source before adding manually, or harvest all enabled sources in one pass.</div>
       <ul class="url-list" id="site-list">
         <li class="empty">Loading...</li>
       </ul>
@@ -303,6 +406,10 @@ app.get("/", (req, res) => {
 
 <script>
   let password = "";
+  let urlPage = 1;
+  let urlPages = 1;
+  let urlSearchTimer = null;
+  let urlSourceSelection = "all";
 
   function login() {
     password = document.getElementById("pw-input").value;
@@ -375,28 +482,134 @@ app.get("/", (req, res) => {
       }).join("");
     });
 
-    api("/api/urls").then(data => {
+    loadUrls();
+  }
+
+
+  function esc(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatDate(value) {
+    if (!value) return "";
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+  }
+
+  function currentUrlParams() {
+    const params = new URLSearchParams({
+      page: String(urlPage),
+      limit: document.getElementById("url-limit")?.value || "25",
+      status: document.getElementById("url-status")?.value || "active",
+    });
+    const q = document.getElementById("url-search")?.value.trim();
+    const source = document.getElementById("url-source")?.value || "all";
+    if (q) params.set("q", q);
+    if (source !== "all") params.set("source", source);
+    return params;
+  }
+
+  function loadUrls() {
+    api("/api/urls?" + currentUrlParams().toString()).then(data => {
+      if (data.error) return;
+
+      const counts = data.counts || {};
+      document.getElementById("pool-total").textContent = counts.total ?? 0;
+      document.getElementById("pool-active").textContent = counts.active ?? 0;
+      document.getElementById("pool-used").textContent = counts.used ?? 0;
+      document.getElementById("pool-failed").textContent = counts.failed ?? 0;
+      document.getElementById("pool-pending").textContent = counts.pending ?? 0;
+
+      const sourceSelect = document.getElementById("url-source");
+      const selected = sourceSelect.value || urlSourceSelection || "all";
+      sourceSelect.innerHTML = '<option value="all">All sources</option>' + (data.sources || []).map(source =>
+        '<option value="' + esc(source.host) + '">' + esc(source.name) + ' — ' + source.active + ' active / ' + source.total + '</option>'
+      ).join("");
+      if ([...sourceSelect.options].some(o => o.value === selected)) sourceSelect.value = selected;
+      else sourceSelect.value = "all";
+      urlSourceSelection = sourceSelect.value;
+
+      urlPage = data.page || 1;
+      urlPages = data.pages || 1;
+      document.getElementById("url-page-label").textContent = "Page " + urlPage + " of " + urlPages;
+      document.getElementById("url-prev").disabled = urlPage <= 1;
+      document.getElementById("url-next").disabled = urlPage >= urlPages;
+
+      const status = document.getElementById("url-status").value;
+      const statusLabel = status === "all" ? "all URLs" : status + " URLs";
+      document.getElementById("pool-filter-label").textContent = "— " + statusLabel;
+      document.getElementById("url-results").textContent = data.filtered === 1
+        ? "1 matching URL"
+        : String(data.filtered || 0) + " matching URLs";
+
       const list = document.getElementById("url-list");
       if (!data.urls?.length) {
-        list.innerHTML = '<li class="empty">No URLs yet — add one below</li>';
+        list.innerHTML = '<li class="empty">No URLs match these filters</li>';
         return;
       }
+
       list.innerHTML = data.urls.map(u => {
-        const domain = (() => { try { return new URL(u.url).hostname.replace("www.",""); } catch { return u.url; } })();
-        const badge  = u.failed
+        const status = u.status || (u.failed ? "failed" : u.consumedAt ? "used" : "active");
+        const badge = status === "failed"
           ? '<span class="badge badge-failed">failed</span>'
-          : u.consumedAt
+          : status === "used"
             ? '<span class="badge badge-consumed">used</span>'
-            : '<span class="badge badge-ok">active</span>';
-        const cls    = u.failed ? "failed" : "";
-        return \`<li class="url-item">
-          <span class="url-text \${cls}" title="\${u.url}">\${domain} — \${u.url.slice(0,60)}\${u.url.length>60?"…":""}</span>
-          \${badge}
-          <button class="btn btn-neutral btn-sm" onclick="resetUrl('\${u._id}')">Reset</button>
-          <button class="btn btn-danger btn-sm"  onclick="removeUrl('\${u._id}')">✕</button>
-        </li>\`;
+            : status === "pending"
+              ? '<span class="badge">pending</span>'
+              : '<span class="badge badge-ok">active</span>';
+        const cls = status === "failed" ? "failed" : "";
+        const dateText = status === "used" && u.consumedAt
+          ? "Used " + formatDate(u.consumedAt)
+          : "Added " + formatDate(u.addedAt);
+        const failText = u.failCount ? "Failures: " + u.failCount : "";
+        const actions = status === "failed"
+          ? '<button class="btn btn-neutral btn-sm" onclick="resetUrl(&quot;' + esc(u._id) + '&quot;)">Retry</button><button class="btn btn-danger btn-sm" onclick="removeUrl(&quot;' + esc(u._id) + '&quot;)">✕</button>'
+          : status === "active" || status === "pending"
+            ? '<button class="btn btn-danger btn-sm" onclick="removeUrl(&quot;' + esc(u._id) + '&quot;)">✕</button>'
+            : "";
+        return '<li class="url-item">'
+          + '<div class="url-main">'
+          + '<div class="url-head"><span class="url-source">' + esc(u.sourceName || u.host) + '</span>' + badge + '</div>'
+          + '<div class="url-text ' + cls + '" title="' + esc(u.url) + '">' + esc(u.url) + '</div>'
+          + '<div class="url-meta"><span>' + esc(dateText) + '</span>' + (failText ? '<span>' + esc(failText) + '</span>' : '') + '</div>'
+          + '</div>'
+          + '<div class="url-actions">' + actions + '</div>'
+          + '</li>';
       }).join("");
     });
+  }
+
+  function queueUrlSearch() {
+    clearTimeout(urlSearchTimer);
+    urlSearchTimer = setTimeout(() => { urlPage = 1; loadUrls(); }, 250);
+  }
+
+  function setUrlFilter() {
+    urlPage = 1;
+    urlSourceSelection = document.getElementById("url-source")?.value || "all";
+    loadUrls();
+  }
+
+  function clearUrlFilters() {
+    document.getElementById("url-search").value = "";
+    document.getElementById("url-status").value = "active";
+    document.getElementById("url-source").value = "all";
+    document.getElementById("url-limit").value = "25";
+    urlSourceSelection = "all";
+    urlPage = 1;
+    loadUrls();
+  }
+
+  function changeUrlPage(delta) {
+    const next = Math.max(1, Math.min(urlPages, urlPage + delta));
+    if (next === urlPage) return;
+    urlPage = next;
+    loadUrls();
   }
 
   function togglePause() {
@@ -460,6 +673,14 @@ app.get("/", (req, res) => {
 
 
   // ── Sites ──────────────────────────────────────────────────────────────────
+  function startHarvest() {
+    if (!confirm("Harvest fresh URLs from all enabled sources? Existing URLs are kept and duplicates are skipped.")) return;
+    api("/api/harvest", { method: "POST" }).then(d => {
+      if (d.error) { alert("Error: " + d.error); return; }
+      alert("Harvest started. Watch the Activity Log for results; the URL counts will refresh automatically.");
+    });
+  }
+
   function loadSites() {
     api("/api/sites").then(data => {
       const list = document.getElementById("site-list");
@@ -640,11 +861,97 @@ app.get("/api/log", requireAuth, (req, res) => {
   res.json({ entries: getEntries() });
 });
 
-// List URLs
+// List URLs — paginated/filterable so large pools stay manageable in the dashboard.
 app.get("/api/urls", requireAuth, async (req, res) => {
   try {
-    const urls = await BotUrl.find().sort({ addedAt: -1 });
-    res.json({ urls });
+    const requestedPage = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(10, parseInt(req.query.limit, 10) || 25));
+    const status = ["all", "active", "used", "failed", "pending"].includes(req.query.status)
+      ? req.query.status
+      : "active";
+    const source = normalizeHost(req.query.source || "");
+    const q = String(req.query.q || "").trim().slice(0, 160);
+
+    const clauses = [urlStatusFilter(status)];
+    if (source && source !== "all") {
+      const host = escapeRegex(source);
+      clauses.push({ url: { $regex: `^https?:\/\/(?:www\.)?${host}(?:[\/:]|$)`, $options: "i" } });
+    }
+    if (q) {
+      const search = new RegExp(escapeRegex(q), "i");
+      clauses.push({ $or: [{ url: search }, { note: search }] });
+    }
+    const query = clauses.length === 1 ? clauses[0] : { $and: clauses };
+
+    const [filtered, allMeta, sites] = await Promise.all([
+      BotUrl.countDocuments(query),
+      BotUrl.find().select("url verified failed consumedAt").lean(),
+      BotSite.find().select("name url").lean(),
+    ]);
+
+    const pages = Math.max(1, Math.ceil(filtered / limit));
+    const page = Math.min(requestedPage, pages);
+    const urls = await BotUrl.find(query)
+      .sort({ addedAt: -1, _id: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const siteNames = new Map();
+    for (const site of sites) {
+      const host = getUrlHost(site.url);
+      if (host !== "unknown") siteNames.set(host, site.name);
+    }
+
+    const counts = { total: allMeta.length, active: 0, used: 0, failed: 0, pending: 0 };
+    const sourceCounts = new Map();
+    for (const entry of allMeta) {
+      const entryStatus = entry.failed
+        ? "failed"
+        : entry.consumedAt
+          ? "used"
+          : entry.verified
+            ? "active"
+            : "pending";
+      counts[entryStatus] += 1;
+
+      const host = getUrlHost(entry.url);
+      const current = sourceCounts.get(host) || {
+        host,
+        name: siteNames.get(host) || host,
+        total: 0,
+        active: 0,
+        used: 0,
+        failed: 0,
+        pending: 0,
+      };
+      current.total += 1;
+      current[entryStatus] += 1;
+      sourceCounts.set(host, current);
+    }
+
+    const sources = [...sourceCounts.values()].sort((a, b) =>
+      b.total - a.total || a.name.localeCompare(b.name),
+    );
+
+    const rows = urls.map((entry) => {
+      const host = getUrlHost(entry.url);
+      const rowStatus = entry.failed
+        ? "failed"
+        : entry.consumedAt
+          ? "used"
+          : entry.verified
+            ? "active"
+            : "pending";
+      return {
+        ...entry,
+        host,
+        sourceName: siteNames.get(host) || entry.note || host,
+        status: rowStatus,
+      };
+    });
+
+    res.json({ urls: rows, page, pages, limit, filtered, counts, sources });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

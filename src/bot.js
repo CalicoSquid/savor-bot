@@ -120,6 +120,40 @@ function sourceDiversityWeight(entry, recent) {
   return weight;
 }
 
+function groupUrlsBySource(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const domain = getDomain(entry.url);
+    const key = domain || entry.note || String(entry._id);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        domain,
+        label: entry.note || domain,
+        entries: [],
+      });
+    }
+    groups.get(key).entries.push(entry);
+  }
+  return Array.from(groups.values());
+}
+
+function sourceInventoryWeight(count) {
+  // Inventory should determine how long a source remains usable, not how often
+  // it wins selection. Give deeper pools only a tiny resilience bonus: roughly
+  // 1.08x at 10 URLs, 1.16x at 100, capped at 1.20x.
+  return 1 + Math.min(0.20, Math.log10(Math.max(1, count)) * 0.08);
+}
+
+function sourceGroupWeight(group, persona, recent) {
+  const representative = group.entries[0];
+  return (
+    scoreUrlForPersona(representative, persona) *
+    sourceDiversityWeight(representative, recent) *
+    sourceInventoryWeight(group.entries.length)
+  );
+}
+
 // ── Pexels ────────────────────────────────────────────────────────────────────
 async function fetchPexelsImage(query) {
   try {
@@ -430,12 +464,24 @@ async function doShare(botUsers) {
     return;
   }
 
+  // Source-first selection: every available publisher gets one lottery ticket
+  // regardless of whether it has 12 unused URLs or 400. Persona preference and
+  // recent-source diversity decide which publisher is chosen; inventory depth
+  // only adds a small capped resilience bonus. Once the source is selected, pick
+  // one unused URL from that source uniformly.
   const recentSources = await getRecentSourceDiversity(10);
-  const entry = weightedPick(
-    fresh,
-    (candidate) => scoreUrlForPersona(candidate, persona) * sourceDiversityWeight(candidate, recentSources),
+  const sourceGroups = groupUrlsBySource(fresh);
+  const chosenSource = weightedPick(
+    sourceGroups,
+    (group) => sourceGroupWeight(group, persona, recentSources),
   );
-  log("📡", "info", "Scraping", `${getDomain(entry.url)} for ${user.name}`);
+  const entry = pick(chosenSource.entries);
+  log(
+    "📡",
+    "info",
+    "Scraping",
+    `${chosenSource.label} (${chosenSource.entries.length} unused) for ${user.name}`,
+  );
 
   let recipeData;
   try {

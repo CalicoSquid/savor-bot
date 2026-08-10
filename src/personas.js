@@ -197,7 +197,11 @@ function scoreRecipeForPersona(recipe, persona) {
 
 function scoreUrlForPersona(entry, persona) {
   let score = 1;
-  if (matchesPreference(entry.note, persona.sources)) score += 5;
+  // Older migrated BotUrl rows predate the `note` field, so fall back to the
+  // domain-derived source name. This keeps persona source preferences working
+  // for the existing pool as well as newly harvested URLs.
+  const sourceName = entry.note || sourceNameFromUrl(entry.url);
+  if (matchesPreference(sourceName, persona.sources)) score += 5;
   return score;
 }
 
