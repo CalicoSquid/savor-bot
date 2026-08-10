@@ -5,7 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node src/index.js --dry-run"
+    "dev": "node src/index.js --dry-run",
+    "verify-sites": "node scripts/verify-sites.js",
+    "rollback-personas": "node scripts/rollback-personas.js"
   },
   "dependencies": {
     "axios": "^1.6.0",

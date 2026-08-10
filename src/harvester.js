@@ -188,4 +188,4 @@ async function previewHarvest(siteId, limit = 20) {
   return { site, candidates };
 }
 
-module.exports = { harvestAll, previewHarvest, saveUrlsToPool };
+module.exports = { harvestAll, previewHarvest, saveUrlsToPool, fetchCandidatesFromSite };

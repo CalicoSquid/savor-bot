@@ -10,6 +10,14 @@ const BotConfig = require("./models/BotConfig");
 const { FIRST_NAMES, SAVOR_RECIPES } = require("./data/recipes");
 const { addEntry } = require("./activityLog");
 const { harvestAll } = require("./harvester");
+const {
+  ensurePersonas,
+  makeDisplayName,
+  makeUsername,
+  scoreRecipeForPersona,
+  scoreUrlForPersona,
+  weightedPick,
+} = require("./personas");
 
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
@@ -52,6 +60,7 @@ const BROWSER_HEADERS = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const personaCache = new Map();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function log(emoji, type, message, detail = "") {
@@ -142,6 +151,32 @@ async function markUrlDead(urlStr) {
   );
 }
 
+async function markUrlConsumed(entry, user, { sharedRecipeId = null, consumedAs = "source" } = {}) {
+  await BotUrl.findByIdAndUpdate(entry._id, {
+    consumedAt: new Date(),
+    consumedBy: user?._id || null,
+    consumedAs,
+    sharedRecipeId,
+    failCount: 0,
+  });
+}
+
+async function backfillConsumedUrls() {
+  if (DRY_RUN) return;
+  const sharedUrls = await Recipe.distinct("sourceUrl", {
+    isShared: true,
+    sourceUrl: { $ne: null },
+  });
+  if (!sharedUrls.length) return;
+  const result = await BotUrl.updateMany(
+    { url: { $in: sharedUrls }, consumedAt: null },
+    { $set: { consumedAt: new Date(), consumedAs: "legacy-shared" } },
+  );
+  if (result.modifiedCount) {
+    log("🧹", "info", `Marked ${result.modifiedCount} legacy shared URLs as consumed`);
+  }
+}
+
 // ── Bot user management ───────────────────────────────────────────────────────
 function assignMaxShares() {
   const roll = Math.random();
@@ -150,10 +185,24 @@ function assignMaxShares() {
   return rand(25, 60);                  // 20% power user
 }
 
+async function hydratePersonas(users) {
+  const missing = users.filter((user) => !personaCache.has(String(user._id)));
+  if (missing.length) {
+    const pairs = await ensurePersonas(missing, { dryRun: DRY_RUN });
+    pairs.forEach(({ user, persona }) => personaCache.set(String(user._id), persona));
+  }
+  return users.map((user) => ({ user, persona: personaCache.get(String(user._id)) }));
+}
+
+function pickActor(pairs, affinityField) {
+  return weightedPick(pairs, ({ persona }) => persona?.[affinityField] || 1);
+}
+
 // Retire a bot user — flag as inactive rather than deleting, so shared
 // recipes retain a valid user reference and display correctly in the feed.
 async function retireBot(user) {
   log("👋", "info", `Bot @${user.username} retiring after ${user.shareCount} shares`);
+  personaCache.delete(String(user._id));
   if (!DRY_RUN) {
     await UserFb.findByIdAndUpdate(user._id, {
       isSeedUser: false,
@@ -171,25 +220,31 @@ async function ensureBotUsers() {
   });
 
   if (existing.length >= BOT_COUNT) {
+    await hydratePersonas(existing);
     log("👥", "info", `${existing.length} bot users ready`);
     return existing;
   }
 
   const needed = BOT_COUNT - existing.length;
-  const usedNames = new Set(existing.map((u) => u.username));
+  const usedNames = new Set(await UserFb.distinct("username"));
   const created = [];
 
   log("👥", "info", `Creating ${needed} new bot users...`);
 
   for (let i = 0; i < needed; i++) {
     let firstName,
+      displayName,
       username,
       attempts = 0;
     do {
       firstName = pick(FIRST_NAMES);
-      username = `${firstName.toLowerCase().replace(/[^a-z]/g, "")}${rand(100, 9999)}`;
+      displayName = makeDisplayName(firstName);
+      username = makeUsername(firstName, displayName);
       attempts++;
-      if (attempts > 50) break;
+      if (attempts > 50) {
+        username = `${firstName.toLowerCase().replace(/[^a-z]/g, "")}${Date.now()}${i}`;
+        break;
+      }
     } while (usedNames.has(username));
 
     usedNames.add(username);
@@ -199,7 +254,7 @@ async function ensureBotUsers() {
       firebaseUID: `bot_user_${username}_${Date.now()}_${index}`,
       username,
       email: `${username}.bot@savor.internal`,
-      name: firstName,
+      name: displayName,
       theme: "Tangerine",
       isSeedUser: true,
       shareCount: 0,
@@ -208,14 +263,22 @@ async function ensureBotUsers() {
 
     if (!DRY_RUN) await user.save();
     created.push(user);
-    log(
-      "  ✓",
-      "info",
-      `${firstName} (@${username}) — lifespan: ${user.maxShares} shares`,
-    );
   }
 
-  return [...existing, ...created];
+  const allUsers = [...existing, ...created];
+  const pairs = await hydratePersonas(allUsers);
+  const createdIds = new Set(created.map((user) => String(user._id)));
+  pairs
+    .filter(({ user }) => createdIds.has(String(user._id)))
+    .forEach(({ user, persona }) => {
+      log(
+        "  ✓",
+        "info",
+        `${user.name} (@${user.username}) — ${persona.templateKey}, ${persona.avatarKind}, lifespan: ${user.maxShares} shares`,
+      );
+    });
+
+  return allUsers;
 }
 
 // ── Scraper ───────────────────────────────────────────────────────────────────
@@ -257,7 +320,7 @@ async function scrapeUrl(url) {
 
 // ── URL Harvester (delegated to harvester.js) ─────────────────────────────────
 async function checkAndHarvestIfLow() {
-  const count = await BotUrl.countDocuments({ verified: { $ne: null }, failed: false });
+  const count = await BotUrl.countDocuments({ verified: { $ne: null }, failed: false, consumedAt: null });
   if (count < URL_POOL_LOW) {
     log("⚠️", "info", `URL pool low (${count}) — triggering auto-harvest`);
     harvestAll().catch((err) => log("❌", "error", "Auto-harvest error", err.message));
@@ -266,14 +329,18 @@ async function checkAndHarvestIfLow() {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 async function doShare(botUsers) {
-  const roll = Math.random();
+  const pairs = await hydratePersonas(botUsers);
+  const actor = pickActor(pairs, "shareAffinity");
+  if (!actor) return;
+  const { user, persona } = actor;
 
-  // 10% → hand-crafted Savor recipe
-  if (roll < 0.1) {
-    const sharedSavorNames = await Recipe.distinct("name", { isShared: true, scrapedWithAI: true, sourceUrl: null });
-    const unshared = SAVOR_RECIPES.filter(r => !sharedSavorNames.includes(r.name));
-    const savor = { ...(unshared.length ? pick(unshared) : pick(SAVOR_RECIPES)) };
-    const user = pick(botUsers);
+  // Hand-crafted Savor recipes are one-shot seeds. Once the original bank is
+  // exhausted, all future "Made with Savor" shares come from fresh source URLs.
+  const sharedNames = await Recipe.distinct("name", { isShared: true });
+  const unsharedSavor = SAVOR_RECIPES.filter((recipe) => !sharedNames.includes(recipe.name));
+  if (unsharedSavor.length && Math.random() < 0.1) {
+    const chosen = weightedPick(unsharedSavor, (recipe) => scoreRecipeForPersona(recipe, persona));
+    const savor = { ...chosen };
     const pexels = await fetchPexelsImage(savor.name);
     savor.image = pexels.url;
     savor.imageCredit = pexels.credit;
@@ -314,27 +381,29 @@ async function doShare(botUsers) {
     return;
   }
 
-  // For both remaining paths we need a URL from the pool
-  const available = await BotUrl.find({ verified: { $ne: null }, failed: false });
+  const available = await BotUrl.find({
+    verified: { $ne: null },
+    failed: false,
+    consumedAt: null,
+  });
   if (!available.length) {
-    log("ℹ️", "info", "No available URLs — add more via the dashboard");
+    log("ℹ️", "info", "No unused URLs — add or harvest more via the dashboard");
     return;
   }
 
-  const sharedUrls = await Recipe.distinct("sourceUrl", {
+  // Keep compatibility with the pre-consumedAt database. External recipes that
+  // were shared by older bot versions are still excluded immediately.
+  const sharedUrls = new Set(await Recipe.distinct("sourceUrl", {
     isShared: true,
     sourceUrl: { $ne: null },
-  });
-  const fresh = available.filter((e) => !sharedUrls.includes(e.url));
-
+  }));
+  const fresh = available.filter((entry) => !sharedUrls.has(entry.url));
   if (!fresh.length) {
-    log("ℹ️", "info", "All URLs already shared — add more via the dashboard");
+    log("ℹ️", "info", "All unused URLs already appear in the feed — harvest more");
     return;
   }
 
-  const entry = pick(fresh);
-  const user = pick(botUsers);
-
+  const entry = weightedPick(fresh, (candidate) => scoreUrlForPersona(candidate, persona));
   log("📡", "info", "Scraping", `${getDomain(entry.url)} for ${user.name}`);
 
   let recipeData;
@@ -360,15 +429,31 @@ async function doShare(botUsers) {
     return;
   }
 
-  // 17% → "Made with Savor" — real scraped data, stripped to look user-typed
-  if (roll < 0.27) {
+  // Catch legacy duplicates where an older bot stripped sourceUrl before the
+  // URL itself could be remembered. We cannot reconstruct those old URLs, but
+  // we can stop them the first time they are encountered again.
+  const escapedName = recipeData.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const duplicateName = await Recipe.exists({
+    isShared: true,
+    sourceUrl: null,
+    scrapedWithAI: true,
+    name: { $regex: `^${escapedName}$`, $options: "i" },
+  });
+  if (duplicateName) {
+    if (!DRY_RUN) await markUrlConsumed(entry, user, { consumedAs: "legacy-duplicate" });
+    log("♻️", "info", `Skipping duplicate recipe "${recipeData.name}"`, getDomain(entry.url));
+    return;
+  }
+
+  const madeWithSavor = Math.random() < (persona.madeWithSavorChance || 0.17);
+  if (madeWithSavor) {
     const pexels = await fetchPexelsImage(recipeData.name);
     recipeData.sourceUrl = null;
     recipeData.author = null;
     recipeData.image = pexels.url;
     recipeData.imageCredit = pexels.credit;
     recipeData.scrapedWithAI = true;
-    log("🍴", "info", `Presenting as Made with Savor`, recipeData.name);
+    log("🍴", "info", "Presenting as Made with Savor", recipeData.name);
   }
 
   if (DRY_RUN) {
@@ -399,6 +484,16 @@ async function doShare(botUsers) {
     user.recipes.push(personal._id);
     user.shareCount = (user.shareCount || 0) + 1;
     await user.save();
+    try {
+      await markUrlConsumed(entry, user, {
+        sharedRecipeId: shared._id,
+        consumedAs: madeWithSavor ? "made-with-savor" : "source",
+      });
+    } catch (consumeErr) {
+      // The share itself succeeded. Keep that success truthful; on a later
+      // cycle the legacy duplicate guard can still consume this URL by name.
+      log("⚠️", "warn", "Shared recipe but could not mark URL consumed", consumeErr.message);
+    }
     log("✅", "share", `Shared "${shared.name}"`, `by ${user.name} (@${user.username})`);
     if (user.shareCount >= user.maxShares) await retireBot(user);
   } catch (err) {
@@ -407,7 +502,10 @@ async function doShare(botUsers) {
 }
 
 async function doLike(botUsers) {
-  const user = pick(botUsers);
+  const pairs = await hydratePersonas(botUsers);
+  const actor = pickActor(pairs, "likeAffinity");
+  if (!actor) return;
+  const { user, persona } = actor;
   const recipes = await Recipe.find({
     isShared: true,
     user: { $ne: user._id },
@@ -421,7 +519,7 @@ async function doLike(botUsers) {
     return;
   }
 
-  const recipe = pick(recipes);
+  const recipe = weightedPick(recipes, (candidate) => scoreRecipeForPersona(candidate, persona));
 
   if (DRY_RUN) {
     log("🟡", "info", `[DRY RUN] Would like "${recipe.name}"`, `by ${user.name}`);
@@ -437,7 +535,10 @@ async function doLike(botUsers) {
 }
 
 async function doSave(botUsers) {
-  const user = pick(botUsers);
+  const pairs = await hydratePersonas(botUsers);
+  const actor = pickActor(pairs, "saveAffinity");
+  if (!actor) return;
+  const { user, persona } = actor;
   const recipes = await Recipe.find({
     isShared: true,
     user: { $ne: user._id },
@@ -451,7 +552,7 @@ async function doSave(botUsers) {
     return;
   }
 
-  const recipe = pick(recipes);
+  const recipe = weightedPick(recipes, (candidate) => scoreRecipeForPersona(candidate, persona));
 
   if (DRY_RUN) {
     log("🟡", "info", `[DRY RUN] Would save "${recipe.name}"`, `by ${user.name} (@${user.username})`);
@@ -497,6 +598,7 @@ async function startBot() {
   log("🗄️", "info", "Connected to MongoDB");
 
   const botUsers = await ensureBotUsers();
+  await backfillConsumedUrls();
   if (!botUsers.length) {
     log("❌", "error", "No bot users available");
     process.exit(1);
@@ -505,8 +607,9 @@ async function startBot() {
   const urlCount = await BotUrl.countDocuments({
     verified: { $ne: null },
     failed: false,
+    consumedAt: null,
   });
-  log("📋", "info", `${urlCount} available bot URLs`);
+  log("📋", "info", `${urlCount} unused bot URLs`);
 
   // Startup cycle — likes and saves only
   log("🚀", "info", "Startup cycle — likes + saves...");
@@ -538,10 +641,12 @@ async function startBot() {
     log("🕐", "info", `Next like in ${Math.round(delay / 60000)} mins`);
     await sleep(delay);
     const cfg = await BotConfig.get();
-    if (!cfg.paused)
-      await doLike(botUsers).catch((err) =>
+    if (!cfg.paused) {
+      const freshUsers = await ensureBotUsers();
+      await doLike(freshUsers).catch((err) =>
         log("❌", "error", "Like error", err.message),
       );
+    }
     else log("⏸️", "info", "Bot paused — skipping like");
     scheduleLike();
   };
@@ -552,10 +657,12 @@ async function startBot() {
     log("🕐", "info", `Next save in ${Math.round(delay / 60000)} mins`);
     await sleep(delay);
     const cfg = await BotConfig.get();
-    if (!cfg.paused)
-      await doSave(botUsers).catch((err) =>
+    if (!cfg.paused) {
+      const freshUsers = await ensureBotUsers();
+      await doSave(freshUsers).catch((err) =>
         log("❌", "error", "Save error", err.message),
       );
+    }
     else log("⏸️", "info", "Bot paused — skipping save");
     scheduleSave();
   };

@@ -12,6 +12,14 @@ const botUrlSchema = new mongoose.Schema({
   failCount: { type: Number, default: 0 },
   addedAt:   { type: Date, default: Date.now },
   note:      { type: String, default: "" },
+
+  // Once a URL produces a successful feed share it is permanently consumed.
+  // This remains true even when the public recipe is presented as "Made with Savor"
+  // and therefore has sourceUrl stripped.
+  consumedAt:      { type: Date, default: null },
+  consumedBy:      { type: mongoose.Schema.Types.ObjectId, ref: "UserFb", default: null },
+  consumedAs:      { type: String, default: null },
+  sharedRecipeId:  { type: mongoose.Schema.Types.ObjectId, ref: "Recipe", default: null },
 });
 
 module.exports = mongoose.model("BotUrl", botUrlSchema);

@@ -132,6 +132,7 @@ app.get("/", (req, res) => {
     }
     .badge-ok     { background: #dcfce7; color: #16a34a; }
     .badge-failed { background: #fee2e2; color: #dc2626; }
+    .badge-consumed { background: #f1f5f9; color: #64748b; }
     .url-add-row  { display: flex; gap: 8px; margin-top: 16px; }
     .url-add-row input {
       flex: 1; padding: 10px 14px; border: 1.5px solid #e0e0e0;
@@ -386,7 +387,9 @@ app.get("/", (req, res) => {
         const domain = (() => { try { return new URL(u.url).hostname.replace("www.",""); } catch { return u.url; } })();
         const badge  = u.failed
           ? '<span class="badge badge-failed">failed</span>'
-          : '<span class="badge badge-ok">active</span>';
+          : u.consumedAt
+            ? '<span class="badge badge-consumed">used</span>'
+            : '<span class="badge badge-ok">active</span>';
         const cls    = u.failed ? "failed" : "";
         return \`<li class="url-item">
           <span class="url-text \${cls}" title="\${u.url}">\${domain} — \${u.url.slice(0,60)}\${u.url.length>60?"…":""}</span>
@@ -611,7 +614,7 @@ app.get("/api/status", requireAuth, async (req, res) => {
     const UserFb = require("./models/UserFB");
 
     const config     = await BotConfig.get();
-    const activeUrls = await BotUrl.countDocuments({ verified: { $ne: null }, failed: false });
+    const activeUrls = await BotUrl.countDocuments({ verified: { $ne: null }, failed: false, consumedAt: null });
     const botShares  = await Recipe.countDocuments({ isShared: true, user: { $in: await UserFb.distinct("_id", { firebaseUID: /^bot_user_/ }) } });
     const botUsers   = await UserFb.countDocuments({ firebaseUID: /^bot_user_/ });
 
@@ -673,7 +676,14 @@ app.post("/api/urls", requireAuth, async (req, res) => {
 // Reset URL (clear failed/failCount)
 app.post("/api/urls/:id/reset", requireAuth, async (req, res) => {
   try {
-    await BotUrl.findByIdAndUpdate(req.params.id, { failed: false, failCount: 0 });
+    await BotUrl.findByIdAndUpdate(req.params.id, {
+      failed: false,
+      failCount: 0,
+      consumedAt: null,
+      consumedBy: null,
+      consumedAs: null,
+      sharedRecipeId: null,
+    });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
