@@ -35,6 +35,20 @@ const KNOWN_SITES = [
   { name: "Feasting at Home", url: "https://www.feastingathome.com/sitemap_index.xml",    index: true,  childPattern: "post-sitemap",          urlPattern: "feastingathome\\.com\\/[a-z0-9-]{5,}\\/",                             enabled: false },
   { name: "The Woks of Life", url: "https://thewoksoflife.com/sitemap_index.xml",         index: true,  childPattern: "post-sitemap",          urlPattern: "thewoksoflife\\.com\\/[a-z0-9-]{5,}\\/",                              enabled: false },
   { name: "Gimme Delicious",  url: "https://gimmedelicious.com/sitemap_index.xml",        index: true,  childPattern: "post-sitemap",          urlPattern: "gimmedelicious\\.com\\/[a-z0-9-]{5,}\\/",                             enabled: false },
+
+  // Generic-discovery candidates — homepage only. The v5 harvester discovers
+  // sitemaps/RSS/archive links automatically and verify-sites tests the final
+  // Savor scrape before any of these are enabled.
+  { name: "Budget Bytes",              url: "https://www.budgetbytes.com/",              enabled: false },
+  { name: "Cookie and Kate",           url: "https://cookieandkate.com/",                enabled: false },
+  { name: "The Mediterranean Dish",    url: "https://www.themediterraneandish.com/",     enabled: false },
+  { name: "Sally's Baking Addiction",  url: "https://sallysbakingaddiction.com/",        enabled: false },
+  { name: "Skinnytaste",               url: "https://www.skinnytaste.com/",              enabled: false },
+  { name: "Once Upon a Chef",          url: "https://www.onceuponachef.com/",            enabled: false },
+  { name: "Natasha's Kitchen",         url: "https://natashaskitchen.com/",              enabled: false },
+  { name: "Simply Recipes",            url: "https://www.simplyrecipes.com/",            enabled: false },
+  { name: "EatingWell",                url: "https://www.eatingwell.com/",               enabled: false },
+  { name: "101 Cookbooks",             url: "https://www.101cookbooks.com/",             enabled: false },
 ];
 
 async function run() {

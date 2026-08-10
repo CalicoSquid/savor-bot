@@ -3,26 +3,29 @@
 const mongoose = require("mongoose");
 
 /**
- * Sitemap sources — replaces the hardcoded SITEMAPS array in bot.js.
- * childPattern and urlPattern stored as strings, converted to RegExp at runtime.
+ * Recipe source configuration.
+ *
+ * url can now be either a homepage OR a sitemap. The harvester auto-discovers
+ * robots.txt sitemaps, common sitemap endpoints, RSS/Atom feeds and a bounded
+ * recipe/archive fallback. Legacy regex fields remain optional hints so known-
+ * good sources stay fast and backwards compatible.
  */
 const botSiteSchema = new mongoose.Schema({
-  name:         { type: String, required: true, unique: true },
-  url:          { type: String, required: true },           // sitemap URL
-  index:        { type: Boolean, default: true },           // true = sitemap index, false = direct urlset
-  childPattern: { type: String, default: "" },              // regex string to match child sitemaps
-  urlPattern:   { type: String, required: true },           // regex string to match recipe URLs
-  enabled:      { type: Boolean, default: false },          // false until manually verified
-  addedAt:      { type: Date, default: Date.now },
-  lastHarvested:{ type: Date, default: null },
+  name:          { type: String, required: true, unique: true },
+  url:           { type: String, required: true },
+  index:         { type: Boolean, default: true },
+  childPattern:  { type: String, default: "" },
+  urlPattern:    { type: String, default: "" },
+  enabled:       { type: Boolean, default: false },
+  addedAt:       { type: Date, default: Date.now },
+  lastHarvested: { type: Date, default: null },
 });
 
-// Convert stored strings to RegExp for use in harvester
 botSiteSchema.methods.childRegex = function () {
   return this.childPattern ? new RegExp(this.childPattern, "i") : null;
 };
 botSiteSchema.methods.urlRegex = function () {
-  return new RegExp(this.urlPattern, "i");
+  return this.urlPattern ? new RegExp(this.urlPattern, "i") : null;
 };
 
 module.exports = mongoose.model("BotSite", botSiteSchema);

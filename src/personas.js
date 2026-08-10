@@ -50,28 +50,28 @@ const PERSONA_TEMPLATES = [
     key: "weeknight",
     cuisines: ["Italian", "Mexican", "Mediterranean"],
     categories: ["Main Course", "Pasta", "Dinner"],
-    sources: ["RecipeTin Eats", "Pinch of Yum", "BBC Good Food"],
+    sources: ["RecipeTin Eats", "Pinch of Yum", "BBC Good Food", "Budget Bytes", "Once Upon a Chef"],
     shareAffinity: 1.25, likeAffinity: 0.8, saveAffinity: 1.35, madeWithSavorChance: 0.16,
   },
   {
     key: "plant-forward",
     cuisines: ["Mediterranean", "Middle Eastern", "Indian"],
     categories: ["Vegetarian", "Salad", "Soup"],
-    sources: ["Minimalist Baker", "BBC Good Food", "Feasting at Home", "Love and Lemons"],
+    sources: ["Minimalist Baker", "BBC Good Food", "Feasting at Home", "Love and Lemons", "Cookie and Kate", "101 Cookbooks"],
     shareAffinity: 0.8, likeAffinity: 1.15, saveAffinity: 1.45, madeWithSavorChance: 0.12,
   },
   {
     key: "baker",
     cuisines: ["British", "French", "American"],
     categories: ["Dessert", "Baking", "Breakfast"],
-    sources: ["BBC Good Food", "Pinch of Yum", "Smitten Kitchen", "Joy the Baker"],
+    sources: ["BBC Good Food", "Pinch of Yum", "Smitten Kitchen", "Joy the Baker", "Sally's Baking Addiction"],
     shareAffinity: 0.65, likeAffinity: 1.35, saveAffinity: 1.15, madeWithSavorChance: 0.24,
   },
   {
     key: "technique",
     cuisines: ["French", "Italian", "American"],
     categories: ["Main Course", "Sauce", "Side Dish"],
-    sources: ["BBC Food", "RecipeTin Eats", "Serious Eats", "David Lebovitz"],
+    sources: ["BBC Food", "RecipeTin Eats", "Serious Eats", "David Lebovitz", "Simply Recipes"],
     shareAffinity: 0.85, likeAffinity: 0.75, saveAffinity: 0.7, madeWithSavorChance: 0.08,
   },
   {
@@ -85,7 +85,7 @@ const PERSONA_TEMPLATES = [
     key: "mediterranean",
     cuisines: ["Italian", "Greek", "Mediterranean", "Levantine"],
     categories: ["Main Course", "Salad", "Vegetarian"],
-    sources: ["BBC Good Food", "RecipeTin Eats", "Feasting at Home"],
+    sources: ["BBC Good Food", "RecipeTin Eats", "Feasting at Home", "The Mediterranean Dish"],
     shareAffinity: 0.95, likeAffinity: 1.25, saveAffinity: 0.95, madeWithSavorChance: 0.2,
   },
   {
@@ -113,14 +113,14 @@ const PERSONA_TEMPLATES = [
     key: "low-fuss",
     cuisines: ["American", "Mexican", "Mediterranean"],
     categories: ["Main Course", "Vegetarian", "Lunch"],
-    sources: ["Minimalist Baker", "RecipeTin Eats", "Gimme Delicious"],
+    sources: ["Minimalist Baker", "RecipeTin Eats", "Gimme Delicious", "Skinnytaste", "EatingWell"],
     shareAffinity: 0.8, likeAffinity: 0.9, saveAffinity: 1.55, madeWithSavorChance: 0.18,
   },
   {
     key: "family",
     cuisines: ["British", "Italian", "American"],
     categories: ["Main Course", "Pasta", "Dessert"],
-    sources: ["BBC Good Food", "RecipeTin Eats", "Damn Delicious"],
+    sources: ["BBC Good Food", "RecipeTin Eats", "Damn Delicious", "Natasha's Kitchen", "Budget Bytes"],
     shareAffinity: 1.1, likeAffinity: 0.85, saveAffinity: 1.25, madeWithSavorChance: 0.2,
   },
   {
@@ -165,6 +165,11 @@ function sourceNameFromUrl(url) {
     ["closetcooking.com", "Closet Cooking"], ["joythebaker.com", "Joy the Baker"],
     ["feastingathome.com", "Feasting at Home"], ["thewoksoflife.com", "The Woks of Life"],
     ["gimmedelicious.com", "Gimme Delicious"],
+    ["budgetbytes.com", "Budget Bytes"], ["cookieandkate.com", "Cookie and Kate"],
+    ["themediterraneandish.com", "The Mediterranean Dish"], ["sallysbakingaddiction.com", "Sally's Baking Addiction"],
+    ["skinnytaste.com", "Skinnytaste"], ["onceuponachef.com", "Once Upon a Chef"],
+    ["natashaskitchen.com", "Natasha's Kitchen"], ["simplyrecipes.com", "Simply Recipes"],
+    ["eatingwell.com", "EatingWell"], ["101cookbooks.com", "101 Cookbooks"],
   ];
   return map.find(([domain]) => host.includes(domain))?.[1] || host;
 }
@@ -256,9 +261,9 @@ function initialAvatarUrl(name) {
   const bg = backgrounds[parseInt(digest.slice(0, 2), 16) % backgrounds.length];
   const label = encodeURIComponent(String(name || "S").trim());
   // UI Avatars returns a normal anti-aliased text avatar. Keep the text
-  // deliberately smaller than default so it retains generous circular padding
+  // close to the normal Google-style proportion while retaining clear circular padding
   // in Savor's cropped Community avatar.
-  return `https://ui-avatars.com/api/?name=${label}&size=256&background=${bg}&color=FAFAF7&length=1&font-size=0.38&bold=false&format=png`;
+  return `https://ui-avatars.com/api/?name=${label}&size=256&background=${bg}&color=FAFAF7&length=1&font-size=0.50&bold=false&format=png`;
 }
 
 function isSimpleFirstName(name) {
@@ -399,6 +404,13 @@ async function applyIdentity(user, persona, { dryRun = false } = {}) {
   }
   if (["Tangerine", "Cornflower", "Burgundy"].includes(user.theme) && user.theme !== persona.theme) {
     user.theme = persona.theme;
+    changed = true;
+  }
+
+  // Refresh v4's smaller UI-Avatars rendering in place. This changes only
+  // existing initials avatars and does not reroll the cohort identity mix.
+  if (persona.avatarKind === "initials" && user.avatar?.includes("ui-avatars.com") && !user.avatar.includes("font-size=0.50")) {
+    user.avatar = initialAvatarUrl(persona.displayName);
     changed = true;
   }
 

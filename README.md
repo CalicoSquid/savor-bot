@@ -33,6 +33,8 @@ In Render → Environment → Add the following:
 |---|---|
 | `MONGODB_URI` | Your MongoDB Atlas connection string |
 | `PEXELS_API_KEY` | Your Pexels API key |
+| `RAILWAY_SCRAPER_URL` | Base URL of the existing Savor scraper/API |
+| `BOT_SCRAPE_SECRET` | Secret accepted by the existing `/bot/scrape` endpoint |
 | `BOT_ADMIN_PASSWORD` | Your chosen dashboard password |
 
 ### 3. Deploy
@@ -69,33 +71,67 @@ Bot accounts now keep a small persistent persona in MongoDB. The persona affects
 
 Public identity follows Savor signup behaviour: about 90% of bot display names are simply a first name, while a small minority use a surname initial, full name, first initial + surname, or initials to reflect occasional user-edited/Google-account outliers. Because the active population is small, the cohort enforces a minimum outlier floor: with 10 active bots, at least one will use an outlier display-name format instead of leaving that entirely to chance. Usernames use several ordinary patterns.
 
-Avatar assignment is also cohort-balanced instead of purely random: roughly 30% retain the normal Gravatar fallback, 20% use clean text initials, 40% use casual non-face Pexels images (pets, food, plants, places, etc.), and 10% use casual portrait photography. The initials use the UI Avatars image service with a smaller font size and generous padding rather than the old pixel-font generator. Geometric identicons are no longer used. If a Pexels avatar lookup fails, that account falls back to clean initials rather than an identicon. Bot themes remain distributed across the three free themes: Tangerine, Cornflower and Burgundy.
+Avatar assignment is also cohort-balanced instead of purely random: roughly 30% retain the normal Gravatar fallback, 20% use clean text initials, 40% use casual non-face Pexels images (pets, food, plants, places, etc.), and 10% use casual portrait photography. The initials use UI Avatars at a 50% font proportion with normal anti-aliased text and circular padding rather than the old pixel-font generator. Existing v4 initials URLs are refreshed in place without rerolling anyone's avatar type. Geometric identicons are no longer used. If a Pexels avatar lookup fails, that account falls back to clean initials rather than an identicon. Bot themes remain distributed across the three free themes: Tangerine, Cornflower and Burgundy.
 
 Identity policy version 2 upgrades existing v3 personas once on first startup. It restores the recorded pre-persona bot name/avatar, reapplies only the visible identity policy, and leaves the persona's cuisine/source/activity behaviour untouched. This is what makes the improved avatar mix and visible name outlier take effect on bots that were already assigned persistent v3 personas.
 
 Consumed source URLs are now recorded in `BotUrl`, so a successfully shared URL cannot re-enter the feed even when its public `sourceUrl` is stripped for a “Made with Savor” share. The original hand-written Savor seed recipes are also one-shot only; they are not recycled after the bank is exhausted.
 
-### Verify more recipe sources
+### Recipe source discovery v5
 
-The repo contains additional disabled candidates. First, safely re-run the existing seeder so any candidates added since the original deploy exist in MongoDB (existing rows are skipped):
+The harvester no longer requires every publisher to have a hand-maintained sitemap structure and URL regex. Existing regexes remain optional high-confidence hints, but discovery now works in layers:
+
+```text
+site/homepage
+  → robots.txt Sitemap declarations
+  → common sitemap endpoints
+  → recursive sitemap indexes (including .xml.gz)
+  → RSS/Atom discovery
+  → bounded recipe/archive link fallback
+  → Schema.org Recipe validation where a URL is not already high-confidence
+  → existing Savor /bot/scrape endpoint remains the final importer
+```
+
+This means a new source can be added from the dashboard with just a **name + website URL**. The old URL/child regex fields are still available as optional advanced hints, so the currently working sources are not thrown away.
+
+The share picker also applies a source-diversity brake using the bot's last 10 consumed source URLs. A domain that has just appeared repeatedly is heavily down-weighted; unseen domains get a boost. This changes selection only — it does not alter Recipe or User schemas.
+
+The seed script now includes additional disabled homepage-only candidates. Re-run it safely (existing rows are skipped):
 
 ```bash
 node scripts/seed-sites.js
 ```
 
-Then test disabled candidates from the same environment as the bot without changing anything:
+Then diagnose disabled candidates from the **deployed bot environment**:
 
 ```bash
 npm run verify-sites
 ```
 
-If the results look good, enable only candidates that actually return matching recipe URLs:
+The report separates discovery from the final Savor scrape, for example:
+
+```text
+Smitten Kitchen
+  sitemaps          4 fetched / 620 URLs
+  feeds             1 fetched / 20 URLs
+  recipe schema     4/7 checked
+  candidates        5
+  Savor scrape      ✓ recipe name
+```
+
+To inspect enabled and disabled sources together:
+
+```bash
+npm run verify-sites -- --all
+```
+
+Only after a disabled source both discovers candidates **and** successfully passes `/bot/scrape`, enable it automatically:
 
 ```bash
 npm run verify-sites -- --enable
 ```
 
-The bot’s persona source preferences already include these candidates, so newly enabled sources begin contributing automatically.
+`--enable` stays conservative: if scraper credentials are unavailable or the final Savor scrape fails, the source remains disabled.
 
 ### Optional profile rollback
 
@@ -140,6 +176,6 @@ src/
     recipes.js      — hand-crafted Savor recipes + name pool
 scripts/
   migrate-urls.js   — one-time import from bot-urls.json
-  verify-sites.js   — test/optionally enable disabled sitemap sources
+  verify-sites.js   — diagnose discovery vs Savor scrape; optionally enable passing sources
   rollback-personas.js — optional restoration of pre-persona bot identity fields
 ```

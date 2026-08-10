@@ -257,7 +257,7 @@ app.get("/", (req, res) => {
 
     <!-- Sites management -->
     <div class="card" style="margin-top:24px">
-      <h2>Sitemap Sources</h2>
+      <h2>Recipe Sources</h2>
       <ul class="url-list" id="site-list">
         <li class="empty">Loading...</li>
       </ul>
@@ -267,12 +267,10 @@ app.get("/", (req, res) => {
         <summary style="cursor:pointer;font-size:13px;font-weight:600;color:#FF6D00">+ Add new site</summary>
         <div style="margin-top:12px;display:grid;gap:8px">
           <input id="site-name"         placeholder="Name (e.g. RecipeTin Eats)"             style="padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:13px;outline:none" />
-          <input id="site-url"          placeholder="Sitemap URL (e.g. https://…/sitemap_index.xml)" style="padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:13px;outline:none" />
-          <input id="site-urlpattern"   placeholder="URL pattern regex (e.g. recipetineats\\.com\\/[a-z0-9-]{5,}\\/)" style="padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:13px;outline:none" />
-          <input id="site-childpattern" placeholder="Child sitemap pattern (e.g. post-sitemap) — leave blank if not an index" style="padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:13px;outline:none" />
-          <label style="font-size:13px;display:flex;align-items:center;gap:6px">
-            <input type="checkbox" id="site-index" checked /> This is a sitemap index (not a direct urlset)
-          </label>
+          <input id="site-url"          placeholder="Website or sitemap URL (e.g. https://smittenkitchen.com)" style="padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:13px;outline:none" />
+          <input id="site-urlpattern"   placeholder="Optional recipe URL regex hint (advanced)" style="padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:13px;outline:none" />
+          <input id="site-childpattern" placeholder="Optional child sitemap regex hint (advanced)" style="padding:10px 14px;border:1.5px solid #e0e0e0;border-radius:10px;font-size:13px;outline:none" />
+          <div style="font-size:12px;color:#888;line-height:1.45">Only the name and website are required. Sitemap/feed discovery is automatic; regex fields are optional legacy hints.</div>
           <button class="btn btn-primary" onclick="addSite()" style="justify-content:center">Add Site</button>
           <div id="site-add-error" style="color:#d32752;font-size:13px;min-height:18px"></div>
         </div>
@@ -508,11 +506,10 @@ app.get("/", (req, res) => {
     const url          = document.getElementById("site-url").value.trim();
     const urlPattern   = document.getElementById("site-urlpattern").value.trim();
     const childPattern = document.getElementById("site-childpattern").value.trim();
-    const index        = document.getElementById("site-index").checked;
     const errEl        = document.getElementById("site-add-error");
     errEl.textContent  = "";
-    if (!name || !url || !urlPattern) { errEl.textContent = "Name, sitemap URL and URL pattern are required."; return; }
-    api("/api/sites", { method: "POST", body: JSON.stringify({ name, url, urlPattern, childPattern, index }) })
+    if (!name || !url) { errEl.textContent = "Name and website URL are required."; return; }
+    api("/api/sites", { method: "POST", body: JSON.stringify({ name, url, urlPattern, childPattern }) })
       .then(d => {
         if (d.error) { errEl.textContent = d.error; return; }
         ["site-name","site-url","site-urlpattern","site-childpattern"].forEach(id => document.getElementById(id).value = "");
@@ -742,13 +739,13 @@ app.get("/api/sites", requireAuth, async (req, res) => {
 // Add a site
 app.post("/api/sites", requireAuth, async (req, res) => {
   try {
-    const { name, url, index, childPattern, urlPattern } = req.body;
-    if (!name || !url || !urlPattern)
-      return res.status(400).json({ error: "name, url and urlPattern required" });
-    // Validate patterns compile
-    try { new RegExp(urlPattern); } catch { return res.status(400).json({ error: "Invalid urlPattern regex" }); }
+    const { name, url, childPattern, urlPattern } = req.body;
+    if (!name || !url)
+      return res.status(400).json({ error: "name and url required" });
+    try { new URL(url); } catch { return res.status(400).json({ error: "Invalid website URL" }); }
+    if (urlPattern) { try { new RegExp(urlPattern); } catch { return res.status(400).json({ error: "Invalid urlPattern regex" }); } }
     if (childPattern) { try { new RegExp(childPattern); } catch { return res.status(400).json({ error: "Invalid childPattern regex" }); } }
-    const site = await BotSite.create({ name, url, index: index !== false, childPattern: childPattern || "", urlPattern, enabled: false });
+    const site = await BotSite.create({ name, url, childPattern: childPattern || "", urlPattern: urlPattern || "", enabled: false });
     res.json({ ok: true, site });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ error: "Site name already exists" });
@@ -782,8 +779,8 @@ app.delete("/api/sites/:id", requireAuth, async (req, res) => {
 app.post("/api/sites/:id/harvest/preview", requireAuth, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.body.limit) || 20, 50);
-    const { site, candidates } = await previewHarvest(req.params.id, limit);
-    res.json({ ok: true, site: { _id: site._id, name: site.name }, candidates });
+    const { site, candidates, diagnostics } = await previewHarvest(req.params.id, limit);
+    res.json({ ok: true, site: { _id: site._id, name: site.name }, candidates, diagnostics });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

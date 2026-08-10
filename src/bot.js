@@ -93,6 +93,33 @@ const getDomain = (url) => {
   }
 };
 
+async function getRecentSourceDiversity(limit = 10) {
+  const recent = await BotUrl.find(
+    { consumedAt: { $ne: null }, consumedAs: { $in: ["source", "made-with-savor"] } },
+    "url consumedAt",
+  )
+    .sort({ consumedAt: -1 })
+    .limit(limit)
+    .lean();
+
+  const counts = new Map();
+  const lastThree = new Set();
+  recent.forEach((entry, index) => {
+    const domain = getDomain(entry.url);
+    counts.set(domain, (counts.get(domain) || 0) + 1);
+    if (index < 3) lastThree.add(domain);
+  });
+  return { counts, lastThree };
+}
+
+function sourceDiversityWeight(entry, recent) {
+  const domain = getDomain(entry.url);
+  const count = recent.counts.get(domain) || 0;
+  let weight = count === 0 ? 1.65 : count === 1 ? 0.8 : count === 2 ? 0.35 : 0.16;
+  if (recent.lastThree.has(domain)) weight *= 0.12;
+  return weight;
+}
+
 // ── Pexels ────────────────────────────────────────────────────────────────────
 async function fetchPexelsImage(query) {
   try {
@@ -403,7 +430,11 @@ async function doShare(botUsers) {
     return;
   }
 
-  const entry = weightedPick(fresh, (candidate) => scoreUrlForPersona(candidate, persona));
+  const recentSources = await getRecentSourceDiversity(10);
+  const entry = weightedPick(
+    fresh,
+    (candidate) => scoreUrlForPersona(candidate, persona) * sourceDiversityWeight(candidate, recentSources),
+  );
   log("📡", "info", "Scraping", `${getDomain(entry.url)} for ${user.name}`);
 
   let recipeData;
