@@ -2,18 +2,23 @@
 
 const axios = require("axios");
 const crypto = require("crypto");
-const zlib = require("zlib");
 
 const BotPersona = require("./models/BotPersona");
 
+const IDENTITY_VERSION = 2;
 const FREE_THEMES = ["Tangerine", "Tangerine", "Cornflower", "Burgundy"];
-const AVATAR_KINDS = [
-  "gravatar", "gravatar", "gravatar",
-  "initials", "initials", "initials",
-  "photo", "photo", "photo",
-  "identicon",
-];
-const PHOTO_TOPICS = [
+
+// Cohort targets matter more than pure per-user randomness when the visible
+// population is only ~10 accounts. These ratios produce a mixed feed without
+// letting one generated style dominate by chance.
+const AVATAR_RATIOS = {
+  gravatar: 0.30,
+  initials: 0.20,
+  image: 0.40,
+  portrait: 0.10,
+};
+
+const IMAGE_TOPICS = [
   "golden retriever dog",
   "cat",
   "houseplant close up",
@@ -25,6 +30,13 @@ const PHOTO_TOPICS = [
   "garden flowers close up",
   "farmers market vegetables close up",
 ];
+
+const PORTRAIT_TOPICS = [
+  "casual portrait person outdoors",
+  "candid portrait person cafe",
+  "casual portrait person kitchen",
+];
+
 const LAST_INITIALS = "BCDFGHJKLMNPRSTVW".split("");
 const LAST_NAMES = [
   "Bennett", "Brooks", "Carter", "Costa", "Dawson", "Evans", "Fischer", "Garcia",
@@ -119,107 +131,6 @@ const PERSONA_TEMPLATES = [
     shareAffinity: 0.75, likeAffinity: 1.55, saveAffinity: 0.95, madeWithSavorChance: 0.3,
   },
 ];
-
-const FONT = {
-  A:["01110","10001","10001","11111","10001","10001","10001"], B:["11110","10001","10001","11110","10001","10001","11110"],
-  C:["01111","10000","10000","10000","10000","10000","01111"], D:["11110","10001","10001","10001","10001","10001","11110"],
-  E:["11111","10000","10000","11110","10000","10000","11111"], F:["11111","10000","10000","11110","10000","10000","10000"],
-  G:["01111","10000","10000","10111","10001","10001","01111"], H:["10001","10001","10001","11111","10001","10001","10001"],
-  I:["11111","00100","00100","00100","00100","00100","11111"], J:["00111","00010","00010","00010","10010","10010","01100"],
-  K:["10001","10010","10100","11000","10100","10010","10001"], L:["10000","10000","10000","10000","10000","10000","11111"],
-  M:["10001","11011","10101","10101","10001","10001","10001"], N:["10001","11001","10101","10011","10001","10001","10001"],
-  O:["01110","10001","10001","10001","10001","10001","01110"], P:["11110","10001","10001","11110","10000","10000","10000"],
-  Q:["01110","10001","10001","10001","10101","10010","01101"], R:["11110","10001","10001","11110","10100","10010","10001"],
-  S:["01111","10000","10000","01110","00001","00001","11110"], T:["11111","00100","00100","00100","00100","00100","00100"],
-  U:["10001","10001","10001","10001","10001","10001","01110"], V:["10001","10001","10001","10001","10001","01010","00100"],
-  W:["10001","10001","10001","10101","10101","11011","10001"], X:["10001","10001","01010","00100","01010","10001","10001"],
-  Y:["10001","10001","01010","00100","00100","00100","00100"], Z:["11111","00001","00010","00100","01000","10000","11111"],
-};
-
-const COLORS = [
-  [91,111,140], [109,124,89], [140,101,112], [108,106,138],
-  [160,106,75], [79,122,120], [123,111,95], [122,94,118],
-];
-
-const crcTable = (() => {
-  const table = [];
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-    table[n] = c >>> 0;
-  }
-  return table;
-})();
-
-function crc32(buf) {
-  let c = 0xffffffff;
-  for (const byte of buf) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function pngChunk(type, data) {
-  const typeBuf = Buffer.from(type);
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length, 0);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
-  return Buffer.concat([length, typeBuf, data, crc]);
-}
-
-function createInitialAvatarDataUri(name) {
-  const size = 128;
-  const initial = (name || "S").trim().charAt(0).toUpperCase();
-  const glyph = FONT[initial] || FONT.S;
-  const digest = crypto.createHash("sha1").update(name || "Savor").digest();
-  const bg = COLORS[digest[0] % COLORS.length];
-  const rgba = Buffer.alloc(size * size * 4);
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      rgba[i] = bg[0]; rgba[i + 1] = bg[1]; rgba[i + 2] = bg[2]; rgba[i + 3] = 255;
-    }
-  }
-
-  const scale = 13;
-  const glyphW = 5 * scale;
-  const glyphH = 7 * scale;
-  const ox = Math.floor((size - glyphW) / 2);
-  const oy = Math.floor((size - glyphH) / 2);
-  for (let gy = 0; gy < 7; gy++) {
-    for (let gx = 0; gx < 5; gx++) {
-      if (glyph[gy][gx] !== "1") continue;
-      for (let py = 0; py < scale; py++) {
-        for (let px = 0; px < scale; px++) {
-          const x = ox + gx * scale + px;
-          const y = oy + gy * scale + py;
-          const i = (y * size + x) * 4;
-          rgba[i] = 250; rgba[i + 1] = 250; rgba[i + 2] = 247; rgba[i + 3] = 255;
-        }
-      }
-    }
-  }
-
-  const scanlines = Buffer.alloc((size * 4 + 1) * size);
-  for (let y = 0; y < size; y++) {
-    const rowStart = y * (size * 4 + 1);
-    scanlines[rowStart] = 0;
-    rgba.copy(scanlines, rowStart + 1, y * size * 4, (y + 1) * size * 4);
-  }
-
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(size, 0);
-  ihdr.writeUInt32BE(size, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-  const png = Buffer.concat([
-    Buffer.from([137,80,78,71,13,10,26,10]),
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", zlib.deflateSync(scanlines, { level: 9 })),
-    pngChunk("IEND", Buffer.alloc(0)),
-  ]);
-  return `data:image/png;base64,${png.toString("base64")}`;
-}
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -339,9 +250,113 @@ async function fetchPexelsAvatar(topic) {
   }
 }
 
-function gravatarIdenticon(email) {
-  const hash = crypto.createHash("md5").update(String(email || "").trim().toLowerCase()).digest("hex");
-  return `https://www.gravatar.com/avatar/${hash}?s=400&d=identicon&r=g`;
+function initialAvatarUrl(name) {
+  const digest = crypto.createHash("sha1").update(String(name || "Savor")).digest("hex");
+  const backgrounds = ["5B6F8C", "6D7C59", "8C6570", "6C6A8A", "A06A4B", "4F7A78", "7B6F5F", "7A5E76"];
+  const bg = backgrounds[parseInt(digest.slice(0, 2), 16) % backgrounds.length];
+  const label = encodeURIComponent(String(name || "S").trim());
+  // UI Avatars returns a normal anti-aliased text avatar. Keep the text
+  // deliberately smaller than default so it retains generous circular padding
+  // in Savor's cropped Community avatar.
+  return `https://ui-avatars.com/api/?name=${label}&size=256&background=${bg}&color=FAFAF7&length=1&font-size=0.38&bold=false&format=png`;
+}
+
+function isSimpleFirstName(name) {
+  const value = String(name || "").trim();
+  return !!value && !/\s/.test(value) && !/^[A-Z]{2,3}$/.test(value);
+}
+
+function makeOutlierDisplayName(firstName) {
+  const first = String(firstName || "Savor").trim().split(/\s+/)[0];
+  const roll = Math.random();
+  if (roll < 0.55) return `${first} ${pick(LAST_INITIALS)}.`;
+  if (roll < 0.80) return `${first} ${pick(LAST_NAMES)}`;
+  if (roll < 0.95) return `${first.charAt(0).toUpperCase()}. ${pick(LAST_NAMES)}`;
+  return `${first.charAt(0).toUpperCase()}${pick(LAST_INITIALS)}`;
+}
+
+function desiredAvatarCounts(total) {
+  const kinds = Object.keys(AVATAR_RATIOS);
+  const raw = kinds.map((kind) => ({
+    kind,
+    exact: total * AVATAR_RATIOS[kind],
+  }));
+  const counts = Object.fromEntries(raw.map(({ kind, exact }) => [kind, Math.floor(exact)]));
+  let left = total - Object.values(counts).reduce((sum, n) => sum + n, 0);
+  raw
+    .sort((a, b) => (b.exact - Math.floor(b.exact)) - (a.exact - Math.floor(a.exact)))
+    .forEach(({ kind }) => {
+      if (left > 0) {
+        counts[kind]++;
+        left--;
+      }
+    });
+  return counts;
+}
+
+function shuffle(items) {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+async function upgradeIdentityCohort(pairs, { dryRun = false } = {}) {
+  const legacy = pairs.filter(({ persona }) => Number(persona.identityVersion || 1) < IDENTITY_VERSION);
+  if (!legacy.length) return;
+
+  const desired = desiredAvatarCounts(pairs.length);
+  const already = {};
+  for (const { persona } of pairs) {
+    if (Number(persona.identityVersion || 1) >= IDENTITY_VERSION) {
+      already[persona.avatarKind] = (already[persona.avatarKind] || 0) + 1;
+    }
+  }
+
+  const slots = [];
+  for (const kind of Object.keys(AVATAR_RATIOS)) {
+    const deficit = Math.max(0, (desired[kind] || 0) - (already[kind] || 0));
+    for (let i = 0; i < deficit; i++) slots.push(kind);
+  }
+  while (slots.length < legacy.length) {
+    slots.push(weightedPick(Object.keys(AVATAR_RATIOS), (kind) => AVATAR_RATIOS[kind]));
+  }
+  const assigned = shuffle(slots).slice(0, legacy.length);
+
+  for (let i = 0; i < legacy.length; i++) {
+    const { user, persona } = legacy[i];
+    const baseName = persona.previousName || user.name || user.username || "Savor user";
+
+    // Remove only the identity v1 avatar/name so the upgraded policy can be
+    // applied cleanly. previous* fields are the untouched pre-persona rollback.
+    user.name = baseName;
+    user.avatar = persona.previousAvatar || null;
+    persona.displayName = makeDisplayName(baseName);
+    persona.avatarKind = assigned[i];
+    persona.avatarTopic = null;
+    persona.identityVersion = IDENTITY_VERSION;
+
+    if (!dryRun) await persona.save();
+  }
+}
+
+async function ensureVisibleNameOutliers(pairs, { dryRun = false } = {}) {
+  if (pairs.length < 6) return;
+  const target = Math.max(1, Math.round(pairs.length * 0.10));
+  const outliers = pairs.filter(({ persona }) => !isSimpleFirstName(persona.displayName));
+  let needed = target - outliers.length;
+  if (needed <= 0) return;
+
+  const candidates = shuffle(pairs.filter(({ persona }) => isSimpleFirstName(persona.displayName)));
+  for (const { user, persona } of candidates) {
+    if (needed <= 0) break;
+    const baseName = persona.previousName || user.name || persona.displayName;
+    persona.displayName = makeOutlierDisplayName(baseName);
+    if (!dryRun) await persona.save();
+    needed--;
+  }
 }
 
 function buildPersona(user) {
@@ -360,7 +375,8 @@ function buildPersona(user) {
     previousName: user.name || null,
     previousAvatar: user.avatar || null,
     previousTheme: user.theme || null,
-    avatarKind: pick(AVATAR_KINDS),
+    identityVersion: IDENTITY_VERSION,
+    avatarKind: weightedPick(Object.keys(AVATAR_RATIOS), (kind) => AVATAR_RATIOS[kind]),
     avatarTopic: null,
     theme: pick(FREE_THEMES),
     cuisines: [...template.cuisines],
@@ -388,19 +404,20 @@ async function applyIdentity(user, persona, { dryRun = false } = {}) {
 
   if (!user.avatar && persona.avatarKind !== "gravatar") {
     if (persona.avatarKind === "initials") {
-      user.avatar = createInitialAvatarDataUri(persona.displayName);
-    } else if (persona.avatarKind === "identicon") {
-      user.avatar = gravatarIdenticon(user.email);
-    } else if (persona.avatarKind === "photo") {
-      const topic = persona.avatarTopic || pick(PHOTO_TOPICS);
+      user.avatar = initialAvatarUrl(persona.displayName);
+    } else if (persona.avatarKind === "image" || persona.avatarKind === "portrait") {
+      const topics = persona.avatarKind === "portrait" ? PORTRAIT_TOPICS : IMAGE_TOPICS;
+      const topic = persona.avatarTopic || pick(topics);
       const photo = await fetchPexelsAvatar(topic);
       persona.avatarTopic = topic;
       personaChanged = true;
       if (photo) user.avatar = photo;
       else {
+        // A failed photo lookup should still keep the cohort visually varied.
+        // Smooth text is a better fallback than a generated geometric identicon.
         persona.avatarKind = "initials";
         personaChanged = true;
-        user.avatar = createInitialAvatarDataUri(persona.displayName);
+        user.avatar = initialAvatarUrl(persona.displayName);
       }
     }
     changed = !!user.avatar || changed;
@@ -414,27 +431,34 @@ async function applyIdentity(user, persona, { dryRun = false } = {}) {
 }
 
 async function ensurePersona(user, { dryRun = false } = {}) {
-  let persona = await BotPersona.findOne({ user: user._id });
-  if (!persona) {
-    const data = buildPersona(user);
-    persona = dryRun ? new BotPersona(data) : await BotPersona.create(data);
-  }
-  await applyIdentity(user, persona, { dryRun });
-  return persona;
+  const [pair] = await ensurePersonas([user], { dryRun });
+  return pair.persona;
 }
 
 async function ensurePersonas(users, { dryRun = false } = {}) {
   const pairs = [];
   for (const user of users) {
-    const persona = await ensurePersona(user, { dryRun });
+    let persona = await BotPersona.findOne({ user: user._id });
+    if (!persona) {
+      const data = buildPersona(user);
+      persona = dryRun ? new BotPersona(data) : await BotPersona.create(data);
+    }
     pairs.push({ user, persona });
+  }
+
+  // v4 is a one-time identity-only upgrade. Taste/behaviour templates remain
+  // untouched; only the visible name/avatar policy is refreshed.
+  await upgradeIdentityCohort(pairs, { dryRun });
+  await ensureVisibleNameOutliers(pairs, { dryRun });
+
+  for (const { user, persona } of pairs) {
+    await applyIdentity(user, persona, { dryRun });
   }
   return pairs;
 }
 
 module.exports = {
   PERSONA_TEMPLATES,
-  createInitialAvatarDataUri,
   ensurePersona,
   ensurePersonas,
   makeDisplayName,

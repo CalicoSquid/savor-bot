@@ -9,6 +9,7 @@ const mongoose = require("mongoose");
 const botPersonaSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: "UserFb", required: true, unique: true },
   templateKey: { type: String, required: true },
+  identityVersion: { type: Number, default: 1 },
   displayName: { type: String, required: true },
   previousName: { type: String, default: null },
   previousAvatar: { type: String, default: null },
